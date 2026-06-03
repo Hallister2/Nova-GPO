@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import re
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from app import GITHUB_REPOSITORY, __version__
+
+
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases"
+RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
+
+
+class UpdateCheckError(RuntimeError):
+    """Raised when the update check cannot reach or parse the release feed."""
+
+
+@dataclass(frozen=True)
+class UpdateCheckResult:
+    current_version: str
+    latest_version: str
+    release_name: str
+    release_url: str
+    is_update_available: bool
+    release_found: bool = True
+    is_prerelease: bool = False
+
+
+def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
+    try:
+        payload = _fetch_highest_release(timeout=timeout)
+    except UpdateCheckError as error:
+        if getattr(error, "no_release", False):
+            current_version = _clean_version(__version__)
+            return UpdateCheckResult(
+                current_version=current_version,
+                latest_version=current_version,
+                release_name="No releases found",
+                release_url=RELEASES_URL,
+                is_update_available=False,
+                release_found=False,
+            )
+        raise
+    latest_version = _release_version(payload)
+    if not latest_version:
+        raise UpdateCheckError("The latest release did not include a recognizable version.")
+
+    release_url = str(payload.get("html_url") or RELEASES_URL).strip()
+    release_name = str(payload.get("name") or payload.get("tag_name") or latest_version).strip()
+    current_version = _clean_version(__version__)
+    is_prerelease = bool(payload.get("prerelease", False))
+
+    return UpdateCheckResult(
+        current_version=current_version,
+        latest_version=latest_version,
+        release_name=release_name,
+        release_url=release_url,
+        is_update_available=_is_newer_version(latest_version, current_version),
+        is_prerelease=is_prerelease,
+    )
+
+
+def _fetch_highest_release(timeout: int) -> dict[str, Any]:
+    releases = _fetch_releases(timeout=timeout)
+    candidates = [
+        release for release in releases
+        if isinstance(release, dict)
+        and not bool(release.get("draft", False))
+        and _version_parts(_release_version(release))
+    ]
+    if not candidates:
+        update_error = UpdateCheckError("No GitHub releases were found for Nova GPO.")
+        update_error.no_release = True
+        raise update_error
+
+    return max(
+        candidates,
+        key=lambda release: _version_parts(_release_version(release)),
+    )
+
+
+def _fetch_releases(timeout: int) -> list[dict[str, Any]]:
+    payload = _fetch_github_json(RELEASES_API, timeout=timeout)
+    if not isinstance(payload, list):
+        raise UpdateCheckError("GitHub returned an unexpected release response.")
+    return payload
+
+
+def _fetch_latest_release(timeout: int) -> dict[str, Any]:
+    payload = _fetch_github_json(LATEST_RELEASE_API, timeout=timeout)
+    if not isinstance(payload, dict):
+        raise UpdateCheckError("GitHub returned an unexpected release response.")
+    return payload
+
+
+def _fetch_github_json(url: str, timeout: int) -> Any:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Nova-GPO-Update-Checker",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            data = response.read().decode("utf-8")
+    except HTTPError as error:
+        if error.code == 404:
+            update_error = UpdateCheckError("No GitHub releases were found for Nova GPO.")
+            update_error.no_release = True
+            raise update_error from error
+        raise UpdateCheckError(f"GitHub returned HTTP {error.code}.") from error
+    except URLError as error:
+        raise UpdateCheckError(f"Could not reach GitHub: {error.reason}") from error
+    except TimeoutError as error:
+        raise UpdateCheckError("The update check timed out.") from error
+
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise UpdateCheckError("GitHub returned an unreadable release response.") from error
+
+    return payload
+
+
+def _clean_version(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned.lower().startswith("v"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
+def _release_version(release: dict[str, Any]) -> str:
+    versions = [
+        _extract_version(str(release.get("tag_name") or "")),
+        _extract_version(str(release.get("name") or "")),
+    ]
+    versions = [version for version in versions if version]
+    if not versions:
+        return ""
+    return max(versions, key=_version_parts)
+
+
+def _extract_version(value: str) -> str:
+    match = re.search(r"\bv?(\d+(?:\.\d+){1,3}(?:[-.][A-Za-z0-9]+)?)\b", value.strip())
+    return _clean_version(match.group(1)) if match else ""
+
+
+def _is_newer_version(candidate: str, current: str) -> bool:
+    candidate_parts = _version_parts(candidate)
+    current_parts = _version_parts(current)
+    width = max(len(candidate_parts), len(current_parts), 1)
+    candidate_parts.extend([0] * (width - len(candidate_parts)))
+    current_parts.extend([0] * (width - len(current_parts)))
+    return candidate_parts > current_parts
+
+
+def _version_parts(value: str) -> list[int]:
+    parts = []
+    for chunk in re.split(r"[^0-9]+", value):
+        if chunk:
+            parts.append(int(chunk))
+    return parts

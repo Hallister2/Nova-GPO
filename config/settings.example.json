@@ -1,0 +1,15 @@
+{
+  "app": {
+    "name": "Nova GPO",
+    "theme": "executive_dark"
+  },
+  "storage": {
+    "backup_root": "",
+    "backup_roots": [],
+    "reports_dir": "reports",
+    "archive_retention_days": 60
+  },
+  "parser": {
+    "resolve_sids": false
+  }
+}

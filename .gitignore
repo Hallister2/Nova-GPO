@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Local app/user state
+config/settings.json
+config/reviews/
+logs/
+*.log
+GPO Backups/
+.claude/
+.vscode/
+.git.OLD/
+
+# Local agent/tool state
+.claude/settings.local.json
+
+# Build and packaging output
+build/
+dist/
+installer/
+*.egg-info/
+NovaGPO.iss
+Claude Scratchpad
+PackageApplication.ps1
