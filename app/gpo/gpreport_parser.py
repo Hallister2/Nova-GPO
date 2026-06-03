@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.gpo import ilt_parser
+from app.gpo.sid_resolver import resolve_privilege_name
 
 
 GP_NS = "http://www.microsoft.com/GroupPolicy/Settings"
@@ -623,7 +624,7 @@ def _read_extension_data(section: ET.Element, scope: str) -> list[GpoReportPolic
                 items.extend(_parse_script_extension(extension, scope))
             elif ext_type in {"security", "securitysettings"}:
                 items.extend(_parse_security_extension(extension, scope))
-            elif ext_type == "folderredirection":
+            elif ext_type in {"folderredirection", "folderredirectionsettings"}:
                 items.extend(_parse_folder_redirection_extension(extension, scope))
             elif ext_type in {"auditsettings", "auditpolicy", "advancedauditpolicysettings"}:
                 items.extend(_parse_audit_policy_extension(extension, scope))
@@ -631,6 +632,18 @@ def _read_extension_data(section: ET.Element, scope: str) -> list[GpoReportPolic
                 items.extend(_parse_applocker_extension(extension, scope))
             elif ext_type in {"firewall", "firewallsettings", "windowsfirewall", "firewall rules"}:
                 items.extend(_parse_firewall_extension(extension, scope))
+            elif ext_type in {"registrysettings", "registry settings",
+                               "internetexplorer", "internetsettings"}:
+                # ADMX-backed policies (3rd-party templates, IE settings, etc.)
+                items.extend(_parse_admx_extension(extension, scope))
+            elif ext_type in {"wlansvcsettings", "wlansvc"}:
+                items.extend(_parse_wlan_extension(extension, scope))
+            elif ext_type in {"dot3svcsettings", "dot3svc"}:
+                items.extend(_parse_dot3_extension(extension, scope))
+            elif ext_type in {"publickeysettings", "publickey"}:
+                items.extend(_parse_public_key_extension(extension, scope))
+            elif ext_type in {"nrptsettings", "nrpt"}:
+                items.extend(_parse_nrpt_extension(extension, scope))
             else:
                 items.extend(_parse_generic_extension(extension, scope, ext_type))
 
@@ -706,6 +719,18 @@ def _parse_security_extension(extension: ET.Element, scope: str) -> list[GpoRepo
 
     for elem in extension.iter():
         tag = _clean_tag(elem.tag)
+
+        # ── User Rights Assignment (Se*Privilege → account list) ──────────────
+        if tag == "UserRightsAssignment":
+            items.extend(_parse_user_rights_assignment(elem, scope))
+            continue
+
+        # ── Security Options (registry-backed security settings) ──────────────
+        if tag == "SecurityOptions":
+            items.extend(_parse_security_option(elem, scope))
+            continue
+
+        # ── Simple key/value settings (Account, Audit, Kerberos, etc.) ────────
         if tag not in {"Account", "Audit", "Kerberos", "EventLog", "Option",
                        "SystemAccess", "account", "audit"}:
             continue
@@ -755,6 +780,96 @@ def _parse_security_extension(extension: ET.Element, scope: str) -> list[GpoRepo
         )
 
     return items
+
+
+def _parse_user_rights_assignment(elem: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse a single <UserRightsAssignment> block from gpreport.xml.
+
+    The gpreport.xml already contains resolved account names in <Member><Name>,
+    so no SID lookup is needed here.
+    """
+    priv_name = _child_text(elem, "Name")
+    if not priv_name:
+        return []
+
+    label = resolve_privilege_name(priv_name)
+
+    members: list[str] = []
+    for child in elem.iter():
+        if _clean_tag(child.tag) == "Member":
+            member_name = _child_text(child, "Name")
+            if member_name and member_name not in members:
+                members.append(member_name)
+
+    value = ", ".join(members) if members else "(no accounts assigned)"
+
+    return [GpoReportPolicy(
+        scope=scope,
+        name=label,
+        state="Configured",
+        category="Security Setting > User Rights Assignment",
+        supported="",
+        explain=priv_name,
+        settings=[value],
+        policy_type="Security Setting",
+        source="gpreport.xml::Security",
+        identity=_identity("security", scope, "user rights", priv_name),
+    )]
+
+
+def _parse_security_option(elem: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse a single <SecurityOptions> block from gpreport.xml.
+
+    Structure:
+        <SecurityOptions>
+            <KeyName>MACHINE\\...\\EnableSecuritySignature</KeyName>
+            <SettingNumber>1</SettingNumber>
+            <Display>
+                <Name>Microsoft network server: Digitally sign communications (if client agrees)</Name>
+                <DisplayBoolean>true</DisplayBoolean>   ← or <DisplayString>
+            </Display>
+        </SecurityOptions>
+    """
+    key_name = _child_text(elem, "KeyName")
+    setting_number = _child_text(elem, "SettingNumber")
+
+    display_elem = _first_child(elem, "Display")
+    if display_elem is not None:
+        friendly_name = _child_text(display_elem, "Name")
+        display_bool = _child_text(display_elem, "DisplayBoolean")
+        display_str = _child_text(display_elem, "DisplayString")
+    else:
+        friendly_name = ""
+        display_bool = ""
+        display_str = ""
+
+    if not friendly_name:
+        # Fall back to the last segment of the registry key path
+        friendly_name = key_name.split("\\")[-1] if key_name else ""
+    if not friendly_name:
+        return []
+
+    if display_bool:
+        value = "Enabled" if display_bool.strip().lower() in {"true", "1"} else "Disabled"
+    elif display_str:
+        value = display_str
+    elif setting_number:
+        value = setting_number
+    else:
+        value = "Configured"
+
+    return [GpoReportPolicy(
+        scope=scope,
+        name=friendly_name,
+        state="Configured",
+        category="Security Setting > Security Options",
+        supported="",
+        explain=key_name,
+        settings=[value],
+        policy_type="Security Setting",
+        source="gpreport.xml::Security",
+        identity=_identity("security", scope, "security options", key_name or friendly_name),
+    )]
 
 
 def _parse_folder_redirection_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
@@ -887,6 +1002,204 @@ def _parse_generic_extension(
             )
         )
 
+    return items
+
+
+def _parse_admx_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Extract Administrative Template policies from RegistrySettings / InternetSettings
+    extension blocks.  These contain the same <Policy> structure as top-level policies
+    but are delivered through ExtensionData for 3rd-party ADMX templates (Office, Chrome,
+    custom templates, IE Maintenance, etc.)."""
+    items: list[GpoReportPolicy] = []
+    for policy in _iter_local(extension, "Policy"):
+        name = _child_text(policy, "Name")
+        if not name:
+            continue
+        category = _category_path(policy)
+        items.append(
+            GpoReportPolicy(
+                scope=scope,
+                name=name,
+                state=_child_text(policy, "State"),
+                category=category,
+                supported=_child_text(policy, "Supported"),
+                explain=_child_text(policy, "Explain"),
+                settings=_policy_settings(policy),
+                policy_type="Administrative Template",
+                source="gpreport.xml::Administrative Template",
+                identity=_policy_identity(scope, "Administrative Template", policy, name, category),
+            )
+        )
+    return items
+
+
+def _parse_wlan_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse Wireless Network (802.11) Policy extension data."""
+    items: list[GpoReportPolicy] = []
+    for profile in extension.iter():
+        tag = _clean_tag(profile.tag).lower()
+        if tag not in {"wlanpolicies", "wlansvc"}:
+            continue
+        name = _child_text(profile, "name") or _child_text(profile, "Name")
+        if not name:
+            continue
+        desc = _child_text(profile, "description") or _child_text(profile, "Description")
+        settings: list[str] = []
+        for flag_name, child_tag in (
+            ("Auto-connect", "enableAutoConfig"),
+            ("Show denied networks", "showDeniedNetwork"),
+            ("Allow soft AP", "enableSoftAP"),
+            ("Explicit credentials", "enableExplicitCreds"),
+            ("GP profiles only", "onlyUseGPProfilesForAllowedNetworks"),
+        ):
+            val = _child_text(profile, child_tag)
+            if val:
+                settings.append(f"{flag_name}: {val}")
+        # Count configured profiles
+        profile_list = _first_child(profile, "profileList")
+        if profile_list is not None:
+            profile_count = sum(1 for c in profile_list if _clean_tag(c.tag) not in {"", "profileList"})
+            if profile_count:
+                settings.append(f"Profiles configured: {profile_count}")
+        items.append(GpoReportPolicy(
+            scope=scope,
+            name=name,
+            state="Configured",
+            category="Wireless Network Policy",
+            supported="",
+            explain=desc,
+            settings=_dedupe(settings),
+            policy_type="Wireless Policy",
+            source="gpreport.xml::WLanSvc",
+            identity=_identity("wlan", scope, name),
+        ))
+    return items
+
+
+def _parse_dot3_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse Wired Network (802.3 / 802.1X) Policy extension data."""
+    items: list[GpoReportPolicy] = []
+    for profile in extension.iter():
+        tag = _clean_tag(profile.tag).lower()
+        if tag not in {"lanpolicies", "dot3svc"}:
+            continue
+        name = _child_text(profile, "name") or _child_text(profile, "Name")
+        if not name:
+            continue
+        desc = _child_text(profile, "description") or _child_text(profile, "Description")
+        settings: list[str] = []
+        for flag_name, child_tag in (
+            ("Auto-connect", "enableAutoConfig"),
+            ("Explicit credentials", "enableExplicitCreds"),
+        ):
+            val = _child_text(profile, child_tag)
+            if val:
+                settings.append(f"{flag_name}: {val}")
+        # Check 802.1X enforcement
+        for lan_profile in _iter_local(profile, "LANProfile"):
+            onex = _child_text(lan_profile, "OneXEnforced")
+            if onex:
+                settings.append(f"802.1X enforced: {onex}")
+        items.append(GpoReportPolicy(
+            scope=scope,
+            name=name,
+            state="Configured",
+            category="Wired Network Policy",
+            supported="",
+            explain=desc,
+            settings=_dedupe(settings),
+            policy_type="Wired Policy",
+            source="gpreport.xml::Dot3Svc",
+            identity=_identity("dot3", scope, name),
+        ))
+    return items
+
+
+def _parse_public_key_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse Public Key / EFS / Certificate Trust extension data."""
+    items: list[GpoReportPolicy] = []
+    for elem in extension.iter():
+        tag = _clean_tag(elem.tag)
+        if tag == "EFSSettings":
+            settings: list[str] = []
+            efs_allow_map = {"0": "Disabled", "1": "Enabled", "2": "Not configured"}
+            allow = _child_text(elem, "AllowEFS")
+            if allow:
+                settings.append(f"EFS: {efs_allow_map.get(allow, allow)}")
+            key_len = _child_text(elem, "KeyLen")
+            if key_len and key_len != "0":
+                settings.append(f"Key length: {key_len} bits")
+            if settings:
+                items.append(GpoReportPolicy(
+                    scope=scope,
+                    name="Encrypting File System (EFS)",
+                    state="Configured",
+                    category="Public Key Policies > EFS",
+                    supported="",
+                    explain="",
+                    settings=settings,
+                    policy_type="Security Setting",
+                    source="gpreport.xml::PublicKey",
+                    identity=_identity("pubkey", scope, "efs"),
+                ))
+        elif tag == "RootCertificateSettings":
+            settings = []
+            for flag_name, child_tag in (
+                ("Allow new CAs", "AllowNewCAs"),
+                ("Trust third-party CAs", "TrustThirdPartyCAs"),
+                ("Require UPN naming", "RequireUPNNamingConstraints"),
+            ):
+                val = _child_text(elem, child_tag)
+                if val:
+                    settings.append(f"{flag_name}: {val}")
+            if settings:
+                items.append(GpoReportPolicy(
+                    scope=scope,
+                    name="Root Certificate Settings",
+                    state="Configured",
+                    category="Public Key Policies > Certificate Trust",
+                    supported="",
+                    explain="",
+                    settings=settings,
+                    policy_type="Security Setting",
+                    source="gpreport.xml::PublicKey",
+                    identity=_identity("pubkey", scope, "root certs"),
+                ))
+    return items
+
+
+def _parse_nrpt_extension(extension: ET.Element, scope: str) -> list[GpoReportPolicy]:
+    """Parse DNS Name Resolution Policy Table (NRPT) extension data."""
+    items: list[GpoReportPolicy] = []
+    for rule in extension.iter():
+        tag = _clean_tag(rule.tag)
+        if tag != "Rule":
+            continue
+        namespace = _child_text(rule, "Namespace") or _child_text(rule, "Name")
+        if not namespace:
+            continue
+        settings: list[str] = []
+        for label, child_tag in (
+            ("DNS servers", "DnsServers"),
+            ("DirectAccess", "DirectAccessEnabled"),
+            ("IPsec required", "IPsecCARestriction"),
+            ("Cert validation", "DnssecEnabled"),
+        ):
+            val = _child_text(rule, child_tag)
+            if val:
+                settings.append(f"{label}: {val}")
+        items.append(GpoReportPolicy(
+            scope=scope,
+            name=namespace,
+            state="Configured",
+            category="Network > DNS Name Resolution Policy",
+            supported="",
+            explain="",
+            settings=settings,
+            policy_type="NRPT Rule",
+            source="gpreport.xml::NRPT",
+            identity=_identity("nrpt", scope, namespace),
+        ))
     return items
 
 

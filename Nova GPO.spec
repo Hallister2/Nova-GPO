@@ -1,15 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
+import ssl
+import os
 from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = []
 hiddenimports += collect_submodules('app')
 
+# Bundle the assets folder (icons, logo, nav images) and the SSL CA bundle
+# so HTTPS downloads work correctly in the frozen EXE.
+datas = [
+    ('assets', 'assets'),
+]
+
+# Include the system CA certificate bundle if certifi is installed
+try:
+    import certifi
+    datas.append((certifi.where(), 'certifi'))
+except ImportError:
+    pass
+
+# Fall back to Python's built-in ssl CA bundle
+_ssl_cafile = ssl.get_default_verify_paths().cafile
+if _ssl_cafile and os.path.exists(_ssl_cafile):
+    datas.append((_ssl_cafile, 'ssl_certs'))
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

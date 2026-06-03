@@ -83,9 +83,18 @@ def _html_theme(t: dict) -> dict:
     }
 
 
+_WINDOW_FLAGS = (
+    Qt.WindowType.Dialog |
+    Qt.WindowType.WindowTitleHint |
+    Qt.WindowType.WindowSystemMenuHint |
+    Qt.WindowType.WindowCloseButtonHint |
+    Qt.WindowType.WindowMaximizeButtonHint
+)
+
+
 class CompareWindow(QDialog):
     def __init__(self, backup_a: GpoBackup, backup_b: GpoBackup, settings: dict[str, Any], parent=None) -> None:
-        super().__init__(parent)
+        super().__init__(parent, _WINDOW_FLAGS)
 
         self.backup_a = backup_a
         self.backup_b = backup_b
@@ -109,6 +118,12 @@ class CompareWindow(QDialog):
         self._expanded_row: QFrame | None = None
         self._expanded_detail_text: QTextEdit | None = None
         self._scroll_to_expanded_pending = False
+        # Per-row caches — populated in _build_accordion_row, cleared on full rebuild
+        self._row_frames: dict[str, QFrame] = {}
+        self._row_toggle_btns: dict[str, QPushButton] = {}
+        self._row_detail_panels: dict[str, QFrame] = {}
+        self._row_detail_texts: dict[str, QTextEdit] = {}
+        self._row_review_widgets: dict[str, dict] = {}
         self._review_save_timer = QTimer(self)
         self._review_save_timer.setSingleShot(True)
         self._review_save_timer.setInterval(450)
@@ -124,13 +139,6 @@ class CompareWindow(QDialog):
         self.setWindowIcon(app_icon())
         self.resize(1320, 800)
         self.setMinimumSize(980, 640)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog |
-            Qt.WindowType.WindowTitleHint |
-            Qt.WindowType.WindowSystemMenuHint |
-            Qt.WindowType.WindowCloseButtonHint |
-            Qt.WindowType.WindowMaximizeButtonHint
-        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -358,18 +366,24 @@ class CompareWindow(QDialog):
 
     def _populate_accordion(self, items: list[PolicyDiff]) -> None:
         self._save_review_for_current_item()
+        self.change_scroll.setVisible(False)
         self._clear_change_list_layout()
         self.current_review_key = ""
-        self.review_disposition = None
-        self.review_impact = None
+        self.review_status = None
+        self.review_priority = None
         self.review_owner_box = None
         self.review_ticket_box = None
-        self.review_note_box = None
-        self.review_points_box = None
+        self.review_tags_box = None
+        self.review_notes_box = None
         self._accordion_rows = []
         self._review_badges = {}
         self._expanded_row = None
         self._expanded_detail_text = None
+        self._row_frames = {}
+        self._row_toggle_btns = {}
+        self._row_detail_panels = {}
+        self._row_detail_texts = {}
+        self._row_review_widgets = {}
         self._scroll_to_expanded_pending = bool(self.expanded_key)
         total_actionable = sum(1 for i in self.diff_items if i.status != "Unchanged")
         count_text = f"{len(items)} of {total_actionable} shown"
@@ -382,12 +396,13 @@ class CompareWindow(QDialog):
             self.expanded_key = items[0].key if items else ""
 
         if not items:
-            empty = QLabel("No comparison results match the current filters.")
+            empty = QLabel("No comparison results match the current filters.", self.change_list_content)
             empty.setObjectName("Muted")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setMinimumHeight(180)
             self.change_list_layout.addWidget(empty)
             self.change_list_layout.addStretch()
+            self.change_scroll.setVisible(True)
             return
 
         visible = items[: self._visible_count]
@@ -399,12 +414,16 @@ class CompareWindow(QDialog):
         remaining = len(items) - len(visible)
         if remaining > 0:
             next_batch = min(_PAGE_SIZE, remaining)
-            load_btn = QPushButton(f"Show {next_batch} more  ({remaining} remaining)")
+            load_btn = QPushButton(
+                f"Show {next_batch} more  ({remaining} remaining)",
+                self.change_list_content,
+            )
             load_btn.setObjectName("GhostButton")
             load_btn.clicked.connect(self._load_more_rows)
             self.change_list_layout.addWidget(load_btn)
 
         self.change_list_layout.addStretch()
+        self.change_scroll.setVisible(True)
         QTimer.singleShot(0, self._adjust_expanded_detail_height)
 
     def _clear_change_list_layout(self) -> None:
@@ -413,14 +432,13 @@ class CompareWindow(QDialog):
             widget = item.widget()
             if widget is not None:
                 widget.hide()
-                widget.setParent(None)
                 widget.deleteLater()
 
         self.change_list_content.updateGeometry()
         self.change_scroll.viewport().update()
 
     def _build_accordion_row(self, item: PolicyDiff) -> QFrame:
-        row = QFrame()
+        row = QFrame(self.change_list_content)
         row.setObjectName("AccordionRow")
         row.setProperty("expanded", item.key == self.expanded_key)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
@@ -433,42 +451,49 @@ class CompareWindow(QDialog):
         policy_type = _policy_type(item)
         status_label = _status_label(item.status)
 
-        status_badge = badge(status_label, item.status.lower(), min_width=112)
+        # Create header_frame first so all child widgets can use it as parent,
+        # keeping them alien (no native HWND) and avoiding SetParent flashes.
+        header_frame = QFrame(row)
+        header_frame.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        scope_label = QLabel(_short_cell(item.scope, 30))
+        status_badge = badge(status_label, item.status.lower(), min_width=112, parent=header_frame)
+
+        scope_label = QLabel(_short_cell(item.scope, 30), header_frame)
         scope_label.setObjectName("Muted")
         scope_label.setToolTip(item.scope)
 
-        type_label = QLabel(_short_cell(policy_type, 28))
+        type_label = QLabel(_short_cell(policy_type, 28), header_frame)
         type_label.setObjectName("Muted")
         type_label.setToolTip(policy_type)
 
-        name_label = QLabel(policy_name)
+        name_label = QLabel(policy_name, header_frame)
         name_label.setObjectName("StatusLabel")
         name_label.setWordWrap(True)
         name_label.setToolTip(policy_name)
 
         review_status = self.review_notes.get(item.key, {}).get("status", "Pending Review")
-        review_badge = badge(review_status, _review_badge_state(review_status), min_width=128)
+        review_badge = badge(review_status, _review_badge_state(review_status), min_width=128, parent=header_frame)
         review_badge.setVisible(review_status != "Pending Review")
         self._review_badges[item.key] = review_badge
 
-        toggle = QPushButton("Collapse" if item.key == self.expanded_key else "Open")
+        toggle = QPushButton("Collapse" if item.key == self.expanded_key else "Open", header_frame)
         toggle.setObjectName("GhostButton")
         toggle.clicked.connect(lambda checked=False, key=item.key: self._toggle_expanded_row(key))
 
-        # Wrap the header in a frame so clicking anywhere on the row (not just
-        # the button) expands/collapses it.  Button clicks are consumed by the
-        # button itself and do not propagate to the frame, so the button still
-        # works independently.
-        header_frame = QFrame()
-        header_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        sep1 = QLabel("›", header_frame)
+        sep1.setObjectName("Muted")
+        sep2 = QLabel("›", header_frame)
+        sep2.setObjectName("Muted")
+
         header = QHBoxLayout(header_frame)
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(10)
+        header.setSpacing(6)
         header.addWidget(status_badge)
+        header.addSpacing(6)
         header.addWidget(scope_label)
+        header.addWidget(sep1)
         header.addWidget(type_label)
+        header.addWidget(sep2)
         header.addWidget(name_label, 1)
         header.addWidget(review_badge)
         header.addWidget(toggle)
@@ -482,10 +507,20 @@ class CompareWindow(QDialog):
 
         layout.addWidget(header_frame)
 
+        # Pre-build the detail panel for every row so toggling is pure show/hide.
+        # This runs inside change_scroll.setVisible(False) so there are no native
+        # window flashes regardless of how many widgets are created here.
+        detail = self._build_expanded_details(item, row)
+        detail.setVisible(item.key == self.expanded_key)
+        layout.addWidget(detail)
+
+        self._row_frames[item.key] = row
+        self._row_toggle_btns[item.key] = toggle
+        self._row_detail_panels[item.key] = detail
+
         if item.key == self.expanded_key:
             self._expanded_row = row
             self.current_review_key = item.key
-            layout.addWidget(self._build_expanded_details(item))
 
         return row
 
@@ -495,11 +530,73 @@ class CompareWindow(QDialog):
 
     def _toggle_expanded_row(self, key: str) -> None:
         self._save_review_for_current_item()
+
+        prev_key = self.expanded_key
         self.expanded_key = "" if self.expanded_key == key else key
+
+        # Collapse previously expanded row — just hide its detail panel.
+        if prev_key and prev_key != self.expanded_key:
+            if prev_key in self._row_detail_panels:
+                self._row_detail_panels[prev_key].setVisible(False)
+            if prev_key in self._row_frames:
+                row = self._row_frames[prev_key]
+                row.setProperty("expanded", "false")
+                row.style().unpolish(row)
+                row.style().polish(row)
+            if prev_key in self._row_toggle_btns:
+                self._row_toggle_btns[prev_key].setText("Open")
+
+        # Expand newly selected row — just show its pre-built detail panel.
         if self.expanded_key:
-            idx = next((i for i, it in enumerate(self.filtered_items) if it.key == self.expanded_key), 0)
-            self._visible_count = max(self._visible_count, idx + 1)
-        self._populate_accordion(self.filtered_items)
+            # If this key isn't in the visible page yet, rebuild to include it.
+            if self.expanded_key not in self._row_detail_panels:
+                idx = next(
+                    (i for i, it in enumerate(self.filtered_items) if it.key == self.expanded_key), 0
+                )
+                self._visible_count = max(self._visible_count, idx + 1)
+                self._populate_accordion(self.filtered_items)
+                return
+
+            if self.expanded_key in self._row_detail_panels:
+                self._row_detail_panels[self.expanded_key].setVisible(True)
+            if self.expanded_key in self._row_frames:
+                row = self._row_frames[self.expanded_key]
+                row.setProperty("expanded", "true")
+                row.style().unpolish(row)
+                row.style().polish(row)
+                self._expanded_row = row
+            if self.expanded_key in self._row_toggle_btns:
+                self._row_toggle_btns[self.expanded_key].setText("Collapse")
+
+            # Restore the instance-level review widget references for this row.
+            w = self._row_review_widgets.get(self.expanded_key, {})
+            self.review_status = w.get("status")
+            self.review_priority = w.get("priority")
+            self.review_owner_box = w.get("owner_box")
+            self.review_ticket_box = w.get("ticket_box")
+            self.review_tags_box = w.get("tags_box")
+            self.review_notes_box = w.get("notes_box")
+            self._expanded_detail_text = self._row_detail_texts.get(self.expanded_key)
+            self.current_review_key = self.expanded_key
+            self._scroll_to_expanded_pending = True
+
+            item = next((it for it in self.filtered_items if it.key == self.expanded_key), None)
+            if item:
+                self._load_review_controls(item)
+        else:
+            # Collapsed everything.
+            self.review_status = None
+            self.review_priority = None
+            self.review_owner_box = None
+            self.review_ticket_box = None
+            self.review_tags_box = None
+            self.review_notes_box = None
+            self._expanded_detail_text = None
+            self._expanded_row = None
+            self.current_review_key = ""
+
+        self._update_review_progress()
+        QTimer.singleShot(0, self._adjust_expanded_detail_height)
 
     def _change_summary_text(self, item: PolicyDiff) -> str:
         if item.status == "Added":
@@ -513,30 +610,30 @@ class CompareWindow(QDialog):
 
         return "This policy appears unchanged between the selected backups."
 
-    def _build_expanded_details(self, item: PolicyDiff) -> QFrame:
-        panel = QFrame()
+    def _build_expanded_details(self, item: PolicyDiff, parent: QWidget) -> QFrame:
+        panel = QFrame(parent)
         panel.setObjectName("AccordionDetail")
 
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(12, 10, 12, 10)
         outer.setSpacing(8)
 
-        summary = QLabel(self._change_summary_text(item))
+        summary = QLabel(self._change_summary_text(item), panel)
         summary.setObjectName("Muted")
         summary.setWordWrap(True)
         outer.addWidget(summary)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal, panel)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(2)
 
         # ── LEFT: change detail ──────────────────────────────────────────
-        left = QWidget()
+        left = QWidget(splitter)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 6, 0)
         left_layout.setSpacing(6)
 
-        details = QTextEdit()
+        details = QTextEdit(left)
         details.setObjectName("DetailText")
         details.setReadOnly(True)
         details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
@@ -544,21 +641,22 @@ class CompareWindow(QDialog):
         details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         details.setHtml(self._diff_detail_html(item))
-        self._expanded_detail_text = details
+        self._row_detail_texts[item.key] = details
 
         # Re-fit height whenever the document lays out (initial render + text reflow on resize)
         details.document().documentLayout().documentSizeChanged.connect(
             lambda _: QTimer.singleShot(0, self._adjust_expanded_detail_height)
         )
 
-        open_row = QHBoxLayout()
-        open_row.setSpacing(8)
-        open_a_btn = QPushButton("Open Backup A")
+        open_a_btn = QPushButton("Open Backup A", left)
         open_a_btn.setObjectName("GhostButton")
-        open_b_btn = QPushButton("Open Backup B")
+        open_b_btn = QPushButton("Open Backup B", left)
         open_b_btn.setObjectName("GhostButton")
         open_a_btn.clicked.connect(lambda: self._open_backup_in_view(self.backup_a))
         open_b_btn.clicked.connect(lambda: self._open_backup_in_view(self.backup_b))
+
+        open_row = QHBoxLayout()
+        open_row.setSpacing(8)
         open_row.addWidget(open_a_btn)
         open_row.addWidget(open_b_btn)
         open_row.addStretch()
@@ -567,97 +665,118 @@ class CompareWindow(QDialog):
         left_layout.addLayout(open_row)
 
         # ── RIGHT: review panel ──────────────────────────────────────────
-        right = QFrame()
+        right = QFrame(splitter)
         right.setObjectName("Panel")
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 12, 14, 12)
         right_layout.setSpacing(4)
 
-        review_title = QLabel("Review")
+        review_title = QLabel("Review", right)
         review_title.setObjectName("PanelTitle")
         right_layout.addWidget(review_title)
         right_layout.addSpacing(4)
 
         review = self._review_for_item(item)
-        self.loading_review = True
 
-        self.review_status = QComboBox()
-        self.review_status.addItems(_REVIEW_STATUSES)
-        self.review_status.setCurrentText(review.get("status", "Pending Review"))
+        row_status = QComboBox(right)
+        row_status.addItems(_REVIEW_STATUSES)
+        row_status.setCurrentText(review.get("status", "Pending Review"))
 
-        self.review_priority = QComboBox()
-        self.review_priority.addItems(_REVIEW_PRIORITIES)
-        self.review_priority.setCurrentText(review.get("priority", "Normal"))
+        row_priority = QComboBox(right)
+        row_priority.addItems(_REVIEW_PRIORITIES)
+        row_priority.setCurrentText(review.get("priority", "Normal"))
 
-        self.review_owner_box = QLineEdit()
-        self.review_owner_box.setPlaceholderText("Reviewer or owner")
-        self.review_owner_box.setText(review.get("owner", ""))
+        row_owner = QLineEdit(right)
+        row_owner.setPlaceholderText("Reviewer or owner")
+        row_owner.setText(review.get("owner", ""))
 
-        self.review_ticket_box = QLineEdit()
-        self.review_ticket_box.setPlaceholderText("Change, incident, or ticket")
-        self.review_ticket_box.setText(review.get("ticket", ""))
+        row_ticket = QLineEdit(right)
+        row_ticket.setPlaceholderText("Change, incident, or ticket")
+        row_ticket.setText(review.get("ticket", ""))
 
-        self.review_tags_box = QLineEdit()
-        self.review_tags_box.setPlaceholderText("Tags, separated by commas")
-        self.review_tags_box.setText(review.get("tags", ""))
+        row_tags = QLineEdit(right)
+        row_tags.setPlaceholderText("Tags, separated by commas")
+        row_tags.setText(review.get("tags", ""))
 
-        self.review_notes_box = QTextEdit()
-        self.review_notes_box.setPlaceholderText("Notes, observations, follow-up actions...")
-        self.review_notes_box.setPlainText(review.get("notes", ""))
+        row_notes = QTextEdit(right)
+        row_notes.setPlaceholderText("Notes, observations, follow-up actions...")
+        row_notes.setPlainText(review.get("notes", ""))
+
+        # Cache per-row widget references so _toggle_expanded_row can restore them.
+        self._row_review_widgets[item.key] = {
+            "status": row_status,
+            "priority": row_priority,
+            "owner_box": row_owner,
+            "ticket_box": row_ticket,
+            "tags_box": row_tags,
+            "notes_box": row_notes,
+        }
+
+        # If this is the currently expanded key, bind the instance variables now.
+        if item.key == self.expanded_key:
+            self.review_status = row_status
+            self.review_priority = row_priority
+            self.review_owner_box = row_owner
+            self.review_ticket_box = row_ticket
+            self.review_tags_box = row_tags
+            self.review_notes_box = row_notes
+            self._expanded_detail_text = details
+
+        _item_key = item.key
 
         def _live_badge_update(status: str) -> None:
-            if not self.loading_review and self.current_review_key in self._review_badges:
-                _apply_review_badge(self._review_badges[self.current_review_key], status)
+            if not self.loading_review and _item_key in self._review_badges:
+                _apply_review_badge(self._review_badges[_item_key], status)
 
-        self.review_status.currentTextChanged.connect(_live_badge_update)
-        self.review_status.currentTextChanged.connect(self._schedule_review_save)
-        self.review_priority.currentTextChanged.connect(self._schedule_review_save)
-        self.review_owner_box.textChanged.connect(self._schedule_review_save)
-        self.review_ticket_box.textChanged.connect(self._schedule_review_save)
-        self.review_tags_box.textChanged.connect(self._schedule_review_save)
-        self.review_notes_box.textChanged.connect(self._schedule_review_save)
-        self.loading_review = False
+        row_status.currentTextChanged.connect(_live_badge_update)
+        row_status.currentTextChanged.connect(self._schedule_review_save)
+        row_priority.currentTextChanged.connect(self._schedule_review_save)
+        row_owner.textChanged.connect(self._schedule_review_save)
+        row_ticket.textChanged.connect(self._schedule_review_save)
+        row_tags.textChanged.connect(self._schedule_review_save)
+        row_notes.textChanged.connect(self._schedule_review_save)
 
         for lbl_text, widget in (
-            ("Status", self.review_status),
-            ("Priority", self.review_priority),
+            ("Status", row_status),
+            ("Priority", row_priority),
         ):
-            lbl = QLabel(lbl_text)
+            lbl = QLabel(lbl_text, right)
             lbl.setObjectName("Muted")
             right_layout.addWidget(lbl)
             right_layout.addWidget(widget)
             right_layout.addSpacing(4)
 
         for lbl_text, widget in (
-            ("Owner", self.review_owner_box),
-            ("Ticket / Change", self.review_ticket_box),
-            ("Tags", self.review_tags_box),
+            ("Owner", row_owner),
+            ("Ticket / Change", row_ticket),
+            ("Tags", row_tags),
         ):
-            lbl = QLabel(lbl_text)
+            lbl = QLabel(lbl_text, right)
             lbl.setObjectName("Muted")
             right_layout.addWidget(lbl)
             right_layout.addWidget(widget)
             right_layout.addSpacing(4)
 
-        quick_row = QHBoxLayout()
-        quick_row.setSpacing(6)
-        add_delta_btn = QPushButton("Add Delta")
+        add_delta_btn = QPushButton("Add Delta", right)
         add_delta_btn.setObjectName("GhostButton")
         add_delta_btn.setToolTip("Append the detected change summary to the notes.")
         add_delta_btn.clicked.connect(lambda: self._append_delta_to_notes(item))
-        reviewed_next_btn = QPushButton("Reviewed + Next")
+        reviewed_next_btn = QPushButton("Reviewed + Next", right)
         reviewed_next_btn.setObjectName("GhostButton")
         reviewed_next_btn.setToolTip("Mark this item as reviewed and move to the next finding.")
         reviewed_next_btn.clicked.connect(self._mark_reviewed_and_next)
+
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(6)
         quick_row.addWidget(add_delta_btn)
         quick_row.addWidget(reviewed_next_btn)
         right_layout.addLayout(quick_row)
         right_layout.addSpacing(4)
 
-        notes_lbl = QLabel("Notes")
+        notes_lbl = QLabel("Notes", right)
         notes_lbl.setObjectName("Muted")
         right_layout.addWidget(notes_lbl)
-        right_layout.addWidget(self.review_notes_box, 1)
+        right_layout.addWidget(row_notes, 1)
         right_layout.addStretch()
 
         splitter.addWidget(left)
@@ -667,7 +786,6 @@ class CompareWindow(QDialog):
 
         outer.addWidget(splitter, 1)
 
-        self._update_review_progress()
         return panel
 
     def _adjust_expanded_detail_height(self) -> None:
@@ -688,41 +806,63 @@ class CompareWindow(QDialog):
         status_color = _status_color(item.status, t)
         delta = _setting_delta_html(item, t)
 
+        state_a = item.state_a or "Not present"
+        state_b = item.state_b or "Not present"
+        states_differ = _norm(state_a) != _norm(state_b)
+
+        if states_differ:
+            state_cell = (
+                f"<td width='50%' style='background:{t['code_bg']}; border-left:1px solid {t['border']}; padding:10px 14px;'>"
+                f"<span style='color:{t['label']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;'>State Change</span><br>"
+                f"<span style='font-size:13px;'><b>{escape(state_a)}</b>"
+                f" <span style='color:{t['label']}; padding:0 5px;'>→</span>"
+                f"<b style='color:{t['orange']};'>{escape(state_b)}</b></span>"
+                f"</td>"
+            )
+        else:
+            state_cell = (
+                f"<td width='50%' style='background:{t['code_bg']}; border-left:1px solid {t['border']}; padding:10px 14px;'>"
+                f"<span style='color:{t['label']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;'>State</span><br>"
+                f"<span style='font-size:13px; color:{t['label']};'>{escape(state_a)}</span>"
+                f"</td>"
+            )
+
         return f"""
-<div style="font-size:13px; line-height:1.55;">
-  <table width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:18px; border-radius:6px; overflow:hidden;">
+<div style="font-size:13px; line-height:1.6; color:{t['text']};">
+  <table width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px; border-radius:6px; overflow:hidden;">
     <tr>
       <td width="50%" style="background:{status_color}; padding:10px 14px;">
-        <span style="color:{t['text']}; font-size:12px; font-weight:600; opacity:0.7;">Status</span><br>
+        <span style="color:{t['text']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; opacity:0.8;">Status</span><br>
         <b style="font-size:14px;">{escape(_status_label(item.status))}</b>
       </td>
-      <td width="50%" style="background:{t['code_bg']}; border-left:1px solid {t['border']}; padding:10px 14px;">
-        <span style="color:{t['text']}; font-size:12px; font-weight:600; opacity:0.7;">State Change</span><br>
-        <b style="font-size:14px;">{escape(item.state_a or 'Not present')}</b>
-        <span style="color:{t['label']}; padding:0 6px;">&rarr;</span>
-        <b style="font-size:14px;">{escape(item.state_b or 'Not present')}</b>
-      </td>
+      {state_cell}
     </tr>
   </table>
 
-  <p style="color:{t['orange']}; font-weight:800; font-size:14px; margin:0 0 8px 0; padding-left:4px; border-left:3px solid {t['orange']}; padding:4px 0 4px 10px;">Actual Delta</p>
-  <div style="background:{t['code_bg']}; border:1px solid {t['border']}; padding:10px 14px; margin-bottom:20px; border-radius:4px;">
+  <p style="color:{t['orange']}; font-weight:800; font-size:12px; margin:0 0 6px 0;
+     padding:5px 10px; border-left:3px solid {t['orange']}; background:{t['code_bg']};
+     text-transform:uppercase; letter-spacing:0.6px;">Actual Delta</p>
+  <div style="margin-bottom:20px;">
     {delta}
   </div>
 
-  <p style="font-weight:800; font-size:14px; color:{t['text']}; margin:0 0 8px 0; padding:4px 0 4px 10px; border-left:3px solid {t['label']};">Compared Values</p>
+  <p style="font-weight:800; font-size:12px; color:{t['label']}; margin:0 0 6px 0;
+     padding:5px 10px; border-left:3px solid {t['label']}; background:{t['code_bg']};
+     text-transform:uppercase; letter-spacing:0.6px;">Compared Values</p>
   <table width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
     <tr>
-      <td width="50%" style="vertical-align:top; padding-right:5px;">
+      <td width="50%" style="vertical-align:top; padding-right:6px;">
         {_backup_card_html("Backup A", t["label"], item.policy_a, "Not present in Backup A.", item, t, "a")}
       </td>
-      <td width="50%" style="vertical-align:top; padding-left:5px;">
+      <td width="50%" style="vertical-align:top; padding-left:6px;">
         {_backup_card_html("Backup B", t["orange"], item.policy_b, "Not present in Backup B.", item, t, "b")}
       </td>
     </tr>
   </table>
 
-  <p style="font-weight:800; font-size:14px; color:{t['text']}; margin:0 0 8px 0; padding:4px 0 4px 10px; border-left:3px solid {t['label']};">Policy Definition</p>
+  <p style="font-weight:800; font-size:12px; color:{t['label']}; margin:0 0 6px 0;
+     padding:5px 10px; border-left:3px solid {t['label']}; background:{t['code_bg']};
+     text-transform:uppercase; letter-spacing:0.6px;">Policy Definition</p>
   {_definition_html(definition_policy, t)}
 </div>
 """
@@ -1102,7 +1242,8 @@ def _split_ilt(settings: list[str]) -> tuple[list[str], list[str]]:
 
 def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict, side: str) -> str:
     if policy is None:
-        return f"<p>{escape(missing_text)}</p>"
+        lbl = t["label"]
+        return f"<p style='color:{lbl}; font-style:italic;'>{escape(missing_text)}</p>"
 
     all_settings, forced_side = (
         _settings_for_context(policy.settings, item, t, side) if item is not None else (policy.settings, "")
@@ -1110,14 +1251,11 @@ def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict
     # Separate ILT lines from regular settings so they render in their own section
     regular, ilt_rules = _split_ilt(all_settings)
 
-    html = (
-        _detail_row("State", policy.state or "Not reported", t)
-        + f"<p style='color:{t['label']}; font-weight:700; margin:8px 0 4px 0;'>Relevant configured values</p>"
-        + _settings_html(regular, item, t, forced_side)
-    )
+    html = f"<p style='color:{t['label']}; font-size:11px; font-weight:700; margin:0 0 6px 0; text-transform:uppercase; letter-spacing:0.4px;'>Configured values</p>"
+    html += _settings_html(regular, item, t, forced_side)
     if ilt_rules:
         html += (
-            f"<p style='color:{t['label']}; font-weight:700; margin:10px 0 4px 0;'>Item-Level Targeting</p>"
+            f"<p style='color:{t['label']}; font-size:11px; font-weight:700; margin:10px 0 4px 0; text-transform:uppercase; letter-spacing:0.4px;'>Item-Level Targeting</p>"
             + _settings_html(ilt_rules, item, t, forced_side)
         )
     return html
@@ -1126,8 +1264,9 @@ def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict
 def _backup_card_html(title: str, color: str, policy, missing_text: str, item: PolicyDiff, t: dict, side: str) -> str:
     return (
         f"<div style='background:{t['code_bg']}; border:1px solid {t['border']}; "
-        f"border-left:4px solid {color}; padding:10px 12px; margin:8px 0;'>"
-        f"<p style='color:{t['label']}; font-weight:700; margin:0 0 8px 0;'>{escape(title)}</p>"
+        f"border-top:3px solid {color}; padding:10px 12px; margin:4px 0; border-radius:4px;'>"
+        f"<p style='color:{color}; font-weight:800; margin:0 0 10px 0;"
+        f" font-size:11px; text-transform:uppercase; letter-spacing:0.5px;'>{escape(title)}</p>"
         f"{_configured_html(policy, missing_text, item, t, side)}"
         "</div>"
     )
@@ -1135,24 +1274,34 @@ def _backup_card_html(title: str, color: str, policy, missing_text: str, item: P
 
 def _settings_html(settings: list[str], item: PolicyDiff | None, t: dict, forced_side: str = "") -> str:
     if not settings:
-        return "<p>No changed configured values were found for this side.</p>"
+        lbl = t["label"]
+        return f"<p style='color:{lbl}; font-style:italic; font-size:12px;'>No changed values on this side.</p>"
 
     rows = "".join(_setting_li(setting, item, t, forced_side) for setting in settings)
-    return f"<ul style='margin-top:4px;'>{rows}</ul>"
+    return f"<ul style='margin:4px 0; padding-left:16px; line-height:1.7;'>{rows}</ul>"
 
 
 def _setting_li(setting: str, item: PolicyDiff | None, t: dict, forced_side: str = "") -> str:
-    style = ""
-    if forced_side or item is not None:
-        side = forced_side or _setting_side(setting, item)
-        if side == "added":
-            bg, fg = t["added_bg"], t["success"]
-            style = f" style='background:{bg}; color:{fg}; padding:3px 6px;'"
-        elif side == "removed":
-            bg, fg = t["removed_bg"], t["danger"]
-            style = f" style='background:{bg}; color:{fg}; padding:3px 6px;'"
+    side = forced_side or ((_setting_side(setting, item)) if item is not None else "")
+    if side == "added":
+        bg, fg = t["added_bg"], t["success"]
+        base_style = f"background:{bg}; color:{fg}; padding:2px 5px; border-radius:3px; display:inline-block;"
+    elif side == "removed":
+        bg, fg = t["removed_bg"], t["danger"]
+        base_style = f"background:{bg}; color:{fg}; padding:2px 5px; border-radius:3px; display:inline-block;"
+    else:
+        base_style = f"color:{t['text']};"
 
-    return f"<li{style}>{escape(setting)}</li>"
+    # Split comma-separated account/value lists so each entry is its own sub-bullet
+    if "," in setting and ":" not in setting:
+        parts = [p.strip() for p in re.split(r",\s*", setting) if p.strip()]
+        if len(parts) > 1:
+            return "".join(
+                f"<li style='padding:2px 0;'><span style='{base_style}'>{escape(p)}</span></li>"
+                for p in parts
+            )
+
+    return f"<li style='padding:2px 0;'><span style='{base_style}'>{escape(setting)}</span></li>"
 
 
 def _setting_delta_html(item: PolicyDiff, t: dict) -> str:
@@ -1236,11 +1385,26 @@ def _setting_delta_html(item: PolicyDiff, t: dict) -> str:
 
 
 def _delta_card(title: str, color: str, values: list[str], t: dict) -> str:
-    rows = "".join(f"<li>{escape(value)}</li>" for value in values)
+    rows: list[str] = []
+    for value in values:
+        # Comma-separated lists (User Rights accounts, group members, etc.) have no ":" label prefix.
+        # Split them so each entry gets its own bullet instead of appearing as one long line.
+        if "," in value and ":" not in value:
+            parts = [p.strip() for p in re.split(r",\s*", value) if p.strip()]
+            if len(parts) > 1:
+                rows.extend(
+                    f"<li style='padding:2px 0; color:{t['text']};'>{escape(p)}</li>"
+                    for p in parts
+                )
+                continue
+        rows.append(f"<li style='padding:2px 0;'>{escape(value)}</li>")
+
     return (
-        f"<div style='border-left:4px solid {color}; background:{t['card_bg']}; padding:8px 10px; margin:8px 0;'>"
-        f"<p style='font-weight:700; margin:0 0 6px 0; color:{color};'>{escape(title)}</p>"
-        f"<ul style='margin-top:4px;'>{rows}</ul>"
+        f"<div style='border-left:3px solid {color}; padding:8px 14px; margin:6px 0;"
+        f" background:{t['card_bg']}; border-radius:0 4px 4px 0;'>"
+        f"<p style='font-weight:700; margin:0 0 8px 0; color:{color};"
+        f" font-size:12px; text-transform:uppercase; letter-spacing:0.4px;'>{escape(title)}</p>"
+        f"<ul style='margin:0; padding-left:16px; line-height:1.7;'>{''.join(rows)}</ul>"
         "</div>"
     )
 
@@ -1390,14 +1554,41 @@ def _norm(value: str) -> str:
 
 def _definition_html(policy, t: dict) -> str:
     if policy is None:
-        return "<p>No policy definition was available for this comparison item.</p>"
+        lbl = t["label"]
+        return f"<p style='color:{lbl}; font-style:italic;'>No policy definition was available for this comparison item.</p>"
 
+    rows: list[str] = []
+    if policy.category and policy.category != "Not reported":
+        rows.append(_def_row("Category", policy.category, t))
+    if policy.policy_type and policy.policy_type not in {"Administrative Template"}:
+        rows.append(_def_row("Type", policy.policy_type, t))
+    if policy.supported:
+        rows.append(_def_row("Supported On", policy.supported, t))
+    rows.append(_def_row("Source", policy.source or "gpreport.xml", t))
+
+    # Only show Explanation when it contains something useful (not a raw Se*Privilege name)
+    explain = (policy.explain or "").strip()
+    if explain and not explain.startswith("Se") and not explain.startswith("MACHINE\\"):
+        rows.append(
+            f"<div style='margin:6px 0;'>"
+            f"<span style='color:{t['label']}; font-size:11px; font-weight:700;"
+            f" text-transform:uppercase; letter-spacing:0.4px;'>Explanation</span>"
+            f"<p style='margin:4px 0 0 0; color:{t['text']}; font-size:12px;"
+            f" line-height:1.6;'>{_multiline_html(explain)}</p>"
+            f"</div>"
+        )
+
+    return f"<div style='display:grid; gap:4px;'>{''.join(rows)}</div>"
+
+
+def _def_row(label: str, value: str, t: dict) -> str:
     return (
-        _detail_row("Category", policy.category or "Not reported", t)
-        + _detail_row("Supported On", policy.supported or "Not specified", t)
-        + _detail_row("Source", policy.source or "gpreport.xml", t)
-        + f"<p style='color:{t['label']}; font-weight:700;'>Explanation</p>"
-        + f"<p>{_multiline_html(policy.explain or 'No explanation text was included.')}</p>"
+        f"<div style='display:flex; gap:12px; align-items:baseline; padding:3px 0;"
+        f" border-bottom:1px solid {t['border']};'>"
+        f"<span style='color:{t['label']}; font-size:11px; font-weight:700;"
+        f" text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap; min-width:90px;'>{escape(label)}</span>"
+        f"<span style='color:{t['text']}; font-size:12px;'>{escape(value)}</span>"
+        "</div>"
     )
 
 

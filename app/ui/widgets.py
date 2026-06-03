@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QWidget
 
 
-def badge(text: str, state: str = "empty", min_width: int = 84) -> QLabel:
-    label = QLabel(text)
+def badge(text: str, state: str = "empty", min_width: int = 84, parent: QWidget | None = None) -> QLabel:
+    label = QLabel(text, parent)
     label.setObjectName("StatusBadge")
     label.setProperty("state", state)
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)

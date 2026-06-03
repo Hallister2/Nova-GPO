@@ -2,11 +2,49 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 
-APP_ROOT = Path(__file__).resolve().parents[2]
+def _get_app_root() -> Path:
+    # When running as a PyInstaller frozen EXE, sys._MEIPASS is the directory
+    # where bundled data files (assets/, etc.) are extracted at runtime.
+    # In development, walk up from this file: app/core/settings.py -> project root.
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parents[2]
+
+
+def _configure_ssl_for_frozen_exe() -> None:
+    """Point Python's SSL stack at the CA bundle bundled by PyInstaller.
+
+    Without this, HTTPS requests (update checker, download) fail silently or
+    hang in the frozen EXE because the default CA path doesn't exist.
+    """
+    if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
+        return
+
+    meipass = Path(sys._MEIPASS)
+
+    # Prefer certifi bundle if we bundled it
+    certifi_ca = meipass / "certifi" / "cacert.pem"
+    # Fall back to ssl_certs bundle (Python's built-in CA file)
+    ssl_ca = meipass / "ssl_certs" / os.path.basename(
+        __import__("ssl").get_default_verify_paths().cafile or "cacert.pem"
+    )
+
+    ca_file = str(certifi_ca) if certifi_ca.exists() else (
+        str(ssl_ca) if ssl_ca.exists() else None
+    )
+
+    if ca_file:
+        os.environ.setdefault("SSL_CERT_FILE", ca_file)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_file)
+
+
+APP_ROOT = _get_app_root()
+_configure_ssl_for_frozen_exe()
 COMPANY_NAME = "Hallister Labs"
 APP_NAME = "Nova GPO"
 
@@ -37,7 +75,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "backup_roots": [],
         "reports_dir": "reports",
         "archive_retention_days": 60,
-        "scan_on_startup": False,
     },
     "parser": {
         "resolve_sids": False,

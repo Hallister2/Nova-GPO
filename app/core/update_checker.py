@@ -28,6 +28,8 @@ class UpdateCheckResult:
     is_update_available: bool
     release_found: bool = True
     is_prerelease: bool = False
+    download_url: str = ""
+    asset_name: str = ""
 
 
 def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
@@ -53,6 +55,7 @@ def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
     release_name = str(payload.get("name") or payload.get("tag_name") or latest_version).strip()
     current_version = _clean_version(__version__)
     is_prerelease = bool(payload.get("prerelease", False))
+    download_url, asset_name = _find_installer_asset(payload)
 
     return UpdateCheckResult(
         current_version=current_version,
@@ -61,6 +64,8 @@ def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
         release_url=release_url,
         is_update_available=_is_newer_version(latest_version, current_version),
         is_prerelease=is_prerelease,
+        download_url=download_url,
+        asset_name=asset_name,
     )
 
 
@@ -158,6 +163,33 @@ def _is_newer_version(candidate: str, current: str) -> bool:
     candidate_parts.extend([0] * (width - len(candidate_parts)))
     current_parts.extend([0] * (width - len(current_parts)))
     return candidate_parts > current_parts
+
+
+def _find_installer_asset(release: dict[str, Any]) -> tuple[str, str]:
+    """Return (download_url, asset_name) for the best Windows installer in the release."""
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return "", ""
+
+    _PREFERRED = {"setup", "installer", "install"}
+
+    candidates: list[dict[str, Any]] = [
+        asset for asset in assets
+        if isinstance(asset, dict)
+        and str(asset.get("name", "")).lower().endswith((".exe", ".msi"))
+        and str(asset.get("browser_download_url", "")).startswith("https://")
+    ]
+
+    if not candidates:
+        return "", ""
+
+    # Prefer assets whose names contain recognisable installer keywords
+    preferred = [
+        a for a in candidates
+        if any(kw in a.get("name", "").lower() for kw in _PREFERRED)
+    ]
+    best = preferred[0] if preferred else candidates[0]
+    return str(best.get("browser_download_url", "")), str(best.get("name", ""))
 
 
 def _version_parts(value: str) -> list[int]:

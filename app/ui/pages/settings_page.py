@@ -7,7 +7,6 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -165,11 +164,6 @@ class SettingsPage(QWidget):
         remove_button.setObjectName("GhostButton")
         remove_button.clicked.connect(self._remove_selected_directory)
 
-        self.scan_on_startup_check = QCheckBox("Scan on startup")
-        self.scan_on_startup_check.setObjectName("Muted")
-        self.scan_on_startup_check.setChecked(self._scan_on_startup())
-        self.scan_on_startup_check.stateChanged.connect(lambda _state: self._save_scan_on_startup())
-
         scan_button = QPushButton("Scan Library")
         scan_button.setObjectName("GhostButton")
         scan_button.clicked.connect(self.library_refresh_needed.emit)
@@ -177,7 +171,6 @@ class SettingsPage(QWidget):
         actions.addWidget(add_button)
         actions.addWidget(remove_button)
         actions.addStretch()
-        actions.addWidget(self.scan_on_startup_check)
         actions.addWidget(scan_button)
         panel_layout.addLayout(actions)
 
@@ -450,15 +443,6 @@ class SettingsPage(QWidget):
     def _save_retention_days(self, value: int) -> None:
         storage = self.settings.setdefault("storage", {})
         storage["archive_retention_days"] = max(0, int(value))
-        save_settings(self.settings)
-
-    def _scan_on_startup(self) -> bool:
-        storage = self.settings.setdefault("storage", {})
-        return bool(storage.get("scan_on_startup", False))
-
-    def _save_scan_on_startup(self) -> None:
-        storage = self.settings.setdefault("storage", {})
-        storage["scan_on_startup"] = self.scan_on_startup_check.isChecked()
         save_settings(self.settings)
 
     def purge_on_startup(self) -> None:

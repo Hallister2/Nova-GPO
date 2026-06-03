@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -64,12 +63,6 @@ class ReportsPage(QWidget):
 
     def update_stats(self, catalog_items: list[BackupCatalogItem], selected_count: int) -> None:
         self._rebuild_stats()
-        if selected_count == 2:
-            self._generate_btn.setText("Compare Selected")
-            self._generate_btn.setEnabled(True)
-        else:
-            self._generate_btn.setText("Select 2 to Compare")
-            self._generate_btn.setEnabled(False)
 
     # ── builders ──────────────────────────────────────────────────────────────
 
@@ -85,35 +78,23 @@ class ReportsPage(QWidget):
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
 
-        self._generate_btn = QPushButton("Select 2 to Compare")
-        self._generate_btn.setObjectName("PrimaryButton")
-        self._generate_btn.setEnabled(False)
-        self._generate_btn.setToolTip(
-            "Select two backups in the Backup Library, then click here to run a comparison."
-        )
-        self._generate_btn.clicked.connect(self._on_generate_clicked)
-
         row.addLayout(title_block, 1)
-        row.addWidget(self._generate_btn)
         return row
 
     def _build_stats_strip(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("RaisedPanel")
-        panel.setMaximumHeight(70)
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(0)
+        layout.setSpacing(12)
 
-        self._stat_reports = _stat_card("Saved Reports", "0")
-        self._stat_findings = _stat_card("Actionable Findings", "0")
-        self._stat_reviewed = _stat_card("Items Reviewed", "0")
+        self._stat_reports_value = QLabel("0")
+        self._stat_findings_value = QLabel("0")
+        self._stat_reviewed_value = QLabel("0")
 
-        layout.addWidget(self._stat_reports)
-        layout.addWidget(_vdivider())
-        layout.addWidget(self._stat_findings)
-        layout.addWidget(_vdivider())
-        layout.addWidget(self._stat_reviewed)
+        layout.addWidget(_stat_card("Saved Reports", self._stat_reports_value))
+        layout.addWidget(_stat_card("Actionable Findings", self._stat_findings_value))
+        layout.addWidget(_stat_card("Items Reviewed", self._stat_reviewed_value))
         layout.addStretch()
 
         return panel
@@ -158,17 +139,18 @@ class ReportsPage(QWidget):
         records = self._compare_records
         total_findings = sum(r.actionable for r in records)
         total_reviewed = sum(r.reviewed for r in records)
-        self._stat_reports.findChild(QLabel, "stat_value").setText(str(len(records)))
-        self._stat_findings.findChild(QLabel, "stat_value").setText(str(total_findings))
-        self._stat_reviewed.findChild(QLabel, "stat_value").setText(str(total_reviewed))
+        self._stat_reports_value.setText(str(len(records)))
+        self._stat_findings_value.setText(str(total_findings))
+        self._stat_reviewed_value.setText(str(total_reviewed))
 
     def _rebuild_cards(self) -> None:
+        self._cards_scroll.setVisible(False)
+
         while self._cards_layout.count():
             item = self._cards_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.hide()
-                widget.setParent(None)
                 widget.deleteLater()
 
         q = self._report_filter
@@ -182,6 +164,7 @@ class ReportsPage(QWidget):
         if not self._compare_records:
             self._cards_layout.addWidget(self._build_empty_state())
             self._cards_layout.addStretch()
+            self._cards_scroll.setVisible(True)
             return
 
         if not visible:
@@ -190,15 +173,17 @@ class ReportsPage(QWidget):
             no_match.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._cards_layout.addWidget(no_match)
             self._cards_layout.addStretch()
+            self._cards_scroll.setVisible(True)
             return
 
         for record in visible:
             self._cards_layout.addWidget(self._build_report_card(record))
 
         self._cards_layout.addStretch()
+        self._cards_scroll.setVisible(True)
 
     def _build_report_card(self, record: CompareLibraryRecord) -> QFrame:
-        card = QFrame()
+        card = QFrame(self._cards_container)
         card.setObjectName("Panel")
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
@@ -216,17 +201,14 @@ class ReportsPage(QWidget):
 
         open_btn = QPushButton("Open Review")
         open_btn.setObjectName("PrimaryButton")
-        open_btn.setFixedHeight(28)
         open_btn.clicked.connect(lambda: self.open_compare_archive_requested.emit(record.record_path))
 
         rename_btn = QPushButton("Rename")
         rename_btn.setObjectName("GhostButton")
-        rename_btn.setFixedHeight(28)
         rename_btn.clicked.connect(lambda: self._rename_record(record))
 
         delete_btn = QPushButton("Delete")
         delete_btn.setObjectName("GhostButton")
-        delete_btn.setFixedHeight(28)
         delete_btn.clicked.connect(lambda: self.delete_compare_archive_requested.emit(record.record_path))
 
         top.addWidget(title_lbl, 1)
@@ -286,7 +268,7 @@ class ReportsPage(QWidget):
         return card
 
     def _build_empty_state(self) -> QFrame:
-        frame = QFrame()
+        frame = QFrame(self._cards_container)
         frame.setObjectName("Panel")
 
         layout = QVBoxLayout(frame)
@@ -321,17 +303,6 @@ class ReportsPage(QWidget):
 
     # ── actions ───────────────────────────────────────────────────────────────
 
-    def _on_generate_clicked(self) -> None:
-        selected = self._get_selected_paths()
-        if len(selected) == 2:
-            self.compare_backups_requested.emit(selected[0], selected[1])
-        else:
-            QMessageBox.information(
-                self,
-                "Select Two Backups",
-                "Select exactly two backups in the Backup Library, then click Compare & Save.",
-            )
-
     def _rename_record(self, record: CompareLibraryRecord) -> None:
         new_title, ok = QInputDialog.getText(
             self,
@@ -345,32 +316,20 @@ class ReportsPage(QWidget):
 
 # ── module helpers ─────────────────────────────────────────────────────────────
 
-def _stat_card(label_text: str, initial_value: str) -> QWidget:
+def _stat_card(label_text: str, value_label: QLabel) -> QWidget:
     frame = QFrame()
+    frame.setObjectName("MetricCard")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(20, 0, 28, 0)
-    layout.setSpacing(2)
+    layout.setContentsMargins(14, 10, 14, 10)
+    layout.setSpacing(3)
 
-    value_lbl = QLabel(initial_value)
-    value_lbl.setObjectName("Title")
-    value_lbl.setProperty("name", "stat_value")
-    # Use findChild by object name later — set a QLabel child name
-    value_lbl.setObjectName("stat_value")
-
+    value_label.setObjectName("Title")
     caption = QLabel(label_text)
     caption.setObjectName("Muted")
 
-    layout.addWidget(value_lbl)
+    layout.addWidget(value_label)
     layout.addWidget(caption)
     return frame
-
-
-def _vdivider() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.VLine)
-    line.setObjectName("Separator")
-    line.setFixedWidth(1)
-    return line
 
 
 def _source_badge_state(status: str) -> str:

@@ -128,11 +128,10 @@ class DashboardPage(QWidget):
     def _build_library_stats(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("RaisedPanel")
-        panel.setMaximumHeight(66)
 
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(0)
+        layout.setSpacing(12)
 
         self.source_count_value = QLabel("0")
         self.backup_count_value = QLabel("0")
@@ -140,11 +139,8 @@ class DashboardPage(QWidget):
         self.last_scan_value = QLabel("Not scanned")
 
         layout.addWidget(_stat_card("Sources", self.source_count_value))
-        layout.addWidget(_vdivider())
         layout.addWidget(_stat_card("Live Backups", self.backup_count_value))
-        layout.addWidget(_vdivider())
         layout.addWidget(_stat_card("Warnings", self.warning_count_value))
-        layout.addWidget(_vdivider())
         layout.addWidget(_stat_card("Last Scan", self.last_scan_value))
         layout.addStretch()
 
@@ -522,9 +518,10 @@ def _short_value(value: str, limit: int = 180) -> str:
 
 def _stat_card(label_text: str, value_label: QLabel) -> QWidget:
     frame = QFrame()
+    frame.setObjectName("MetricCard")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(20, 0, 28, 0)
-    layout.setSpacing(2)
+    layout.setContentsMargins(14, 10, 14, 10)
+    layout.setSpacing(3)
 
     value_label.setObjectName("Title")
     caption = QLabel(label_text)
@@ -533,11 +530,3 @@ def _stat_card(label_text: str, value_label: QLabel) -> QWidget:
     layout.addWidget(value_label)
     layout.addWidget(caption)
     return frame
-
-
-def _vdivider() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.VLine)
-    line.setObjectName("Separator")
-    line.setFixedWidth(1)
-    return line

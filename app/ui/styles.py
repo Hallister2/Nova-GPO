@@ -138,6 +138,13 @@ QLabel#Muted {{
     font-size: 12px;
 }}
 
+QLabel#SidebarFooterBrand {{
+    color: {t["secondary"]};
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}}
+
 QLabel#StatusLabel {{
     color: {t["secondary"]};
     font-size: 11px;

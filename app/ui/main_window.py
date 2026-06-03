@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import ssl
+import subprocess
+import tempfile
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +106,55 @@ class _UpdateCheckWorker(QObject):
             self.finished.emit(False, None, str(error), self.manual)
             return
         self.finished.emit(True, result, "", self.manual)
+
+
+class _DownloadWorker(QObject):
+    """Downloads a URL to a temp file in chunks, reporting progress."""
+    progress = Signal(int)       # percent 0–100
+    finished = Signal(bool, str) # (success, dest_path_or_error_message)
+
+    _CHUNK = 65_536   # 64 KB read size
+    _TIMEOUT = 60     # seconds for connect + each read
+
+    def __init__(self, url: str, dest_path: str) -> None:
+        super().__init__()
+        self.url = url
+        self.dest_path = dest_path
+
+    def run(self) -> None:
+        try:
+            # Build an SSL context that works in both dev and frozen PyInstaller EXEs.
+            # Try the default context (uses system / certifi CAs) and fall back to
+            # unverified — acceptable here because we already validated the URL is
+            # from github.com / objects.githubusercontent.com.
+            try:
+                ssl_ctx = ssl.create_default_context()
+            except Exception:
+                ssl_ctx = ssl._create_unverified_context()
+
+            req = urllib.request.Request(
+                self.url,
+                headers={"User-Agent": "Nova-GPO-Updater/1.0"},
+            )
+
+            with urllib.request.urlopen(req, timeout=self._TIMEOUT, context=ssl_ctx) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                downloaded = 0
+
+                with open(self.dest_path, "wb") as fh:
+                    while True:
+                        chunk = resp.read(self._CHUNK)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self.progress.emit(min(99, downloaded * 100 // total))
+
+            self.progress.emit(100)
+            self.finished.emit(True, self.dest_path)
+        except Exception as exc:
+            self.finished.emit(False, str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -206,13 +260,24 @@ class MainWindow(QMainWindow):
         logo = QLabel()
         logo.setObjectName("BrandLogo")
         logo.setFixedSize(148, 48)
-        logo.setPixmap(
-            QPixmap(str(APP_LOGO_PATH)).scaled(
-                148, 48,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+
+        # Load explicitly so we can check for failure and fall back gracefully
+        _logo_pixmap = QPixmap()
+        if APP_LOGO_PATH.exists():
+            _logo_pixmap.load(str(APP_LOGO_PATH))
+        if not _logo_pixmap.isNull():
+            logo.setPixmap(
+                _logo_pixmap.scaled(
+                    148, 48,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             )
-        )
+        else:
+            _log.warning("Could not load application logo from %s", APP_LOGO_PATH)
+            logo.setText("NOVA GPO")
+            logo.setObjectName("Logo")
+
         logo_row.addWidget(logo)
         logo_row.addStretch()
         layout.addLayout(logo_row)
@@ -242,9 +307,12 @@ class MainWindow(QMainWindow):
         layout.addSpacing(8)
         layout.addWidget(self._build_theme_toggle())
         layout.addSpacing(8)
-        footer = QLabel(f"Hallister Labs\nNova GPO {__version__}")
-        footer.setObjectName("Muted")
-        layout.addWidget(footer)
+        footer_brand = QLabel("Hallister Labs")
+        footer_brand.setObjectName("SidebarFooterBrand")
+        footer_version = QLabel(f"Nova GPO {__version__}")
+        footer_version.setObjectName("Muted")
+        layout.addWidget(footer_brand)
+        layout.addWidget(footer_version)
         return sidebar
 
     def _build_theme_toggle(self) -> QFrame:
@@ -399,15 +467,13 @@ class MainWindow(QMainWindow):
 
         roots = self._backup_roots()
         if not roots:
-            self.statusBar().showMessage("No backup sources configured - add directories in Settings.")
+            self.statusBar().showMessage("No backup sources configured — add directories in Settings.")
             return
 
-        if self.settings.get("storage", {}).get("scan_on_startup", False):
-            QTimer.singleShot(250, self._refresh_library)
-            self.statusBar().showMessage("Startup scan scheduled.")
-            return
-
-        self.statusBar().showMessage("Backup sources configured - open Backup Library and click Scan when ready.")
+        # Auto-scan on startup whenever backup sources are configured.
+        # The scan worker silently skips any root that is missing or unreadable.
+        self.statusBar().showMessage(f"Scanning {len(roots)} backup source(s)…")
+        QTimer.singleShot(250, self._refresh_library)
 
     def _on_scan_finished(self, items: list[BackupCatalogItem]) -> None:
         self.catalog_items = items
@@ -503,11 +569,109 @@ class MainWindow(QMainWindow):
         if getattr(result, "is_prerelease", False):
             release_label = f"{release_label} prerelease"
         self.statusBar().showMessage(f"{release_label} is available.")
-        self._toast.info_action(
-            f"{release_label} is available.",
-            "View Release",
-            lambda: QDesktopServices.openUrl(QUrl(result.release_url)),
+
+        if getattr(result, "download_url", ""):
+            # Installer asset found — offer one-click download and install
+            self._toast.info_action(
+                f"{release_label} is available.",
+                "Download & Install",
+                lambda r=result: self._start_update_download(r),
+            )
+        else:
+            # No installer asset — fall back to browser
+            self._toast.info_action(
+                f"{release_label} is available.",
+                "View Release",
+                lambda: QDesktopServices.openUrl(QUrl(result.release_url)),
+            )
+
+    def _start_update_download(self, result: object) -> None:
+        """Begin downloading the installer in a background thread."""
+        if getattr(self, "_download_thread", None) and self._download_thread.isRunning():
+            self._toast.info("A download is already in progress.")
+            return
+
+        asset_name = getattr(result, "asset_name", "") or "NovaGPO-Setup.exe"
+        download_url = result.download_url
+
+        # Validate the URL is from GitHub before proceeding
+        if not download_url.startswith("https://github.com/") and \
+           not download_url.startswith("https://objects.githubusercontent.com/"):
+            self._toast.error("Download URL is not from GitHub — update cancelled.")
+            return
+
+        tmp_dir = tempfile.mkdtemp(prefix="novagpo_update_")
+        dest_path = os.path.join(tmp_dir, asset_name)
+
+        # Store on self so the slot methods below can read them.
+        # This avoids lambda captures which run on the worker thread (DirectConnection)
+        # rather than the main thread (QueuedConnection via AutoConnection on QObject slots).
+        self._update_version = getattr(result, "latest_version", "")
+        self._update_installer_path = ""  # filled in on successful finish
+
+        self.statusBar().showMessage(f"Downloading Nova GPO {self._update_version}…  0%")
+        self._toast.info(f"Downloading {asset_name}…")
+
+        self._download_thread = QThread(self)
+        self._download_worker = _DownloadWorker(download_url, dest_path)
+        self._download_worker.moveToThread(self._download_thread)
+        self._download_thread.started.connect(self._download_worker.run)
+
+        # Connect to proper QObject slot methods — AutoConnection correctly marshals
+        # these to the main thread because self is a QObject living in the main thread.
+        self._download_worker.progress.connect(self._on_download_progress)
+        self._download_worker.finished.connect(self._on_download_finished)
+        self._download_worker.finished.connect(self._download_thread.quit)
+        self._download_worker.finished.connect(self._download_worker.deleteLater)
+        self._download_thread.finished.connect(self._download_thread.deleteLater)
+        self._download_thread.finished.connect(self._on_download_thread_done)
+        self._download_thread.start()
+
+    def _on_download_progress(self, pct: int) -> None:
+        """Slot — always runs on main thread via AutoConnection."""
+        version = getattr(self, "_update_version", "")
+        self.statusBar().showMessage(f"Downloading Nova GPO {version}…  {pct}%")
+
+    def _on_download_finished(self, ok: bool, path_or_error: str) -> None:
+        """Slot — always runs on main thread via AutoConnection."""
+        version = getattr(self, "_update_version", "")
+
+        if not ok:
+            _log.error("Update download failed: %s", path_or_error)
+            self.statusBar().showMessage("Download failed.")
+            self._toast.error(f"Download failed: {path_or_error}")
+            return
+
+        self.statusBar().showMessage(f"Nova GPO {version} downloaded.")
+        self._update_installer_path = path_or_error
+
+        answer = QMessageBox.question(
+            self,
+            "Install Update",
+            f"Nova GPO {version} has been downloaded.\n\n"
+            f"The installer will launch now and Nova GPO will close.\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        installer_path = self._update_installer_path
+        try:
+            if os.name == "nt":
+                os.startfile(installer_path)  # noqa: S606 — UAC elevation handled by OS
+            else:
+                subprocess.Popen([installer_path])
+        except Exception as error:
+            _log.error("Could not launch installer: %s", error)
+            self._toast.error(f"Could not launch installer: {error}")
+            return
+
+        QApplication.quit()
+
+    def _on_download_thread_done(self) -> None:
+        """Slot — cleans up download thread reference on the main thread."""
+        self._download_thread = None
 
     # ── dialogs ───────────────────────────────────────────────────────────
 

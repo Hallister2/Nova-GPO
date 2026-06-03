@@ -41,7 +41,14 @@ class ViewWindow(QDialog):
     compare_with_requested = Signal(str)
 
     def __init__(self, backup: GpoBackup, parent=None) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            Qt.WindowType.Dialog |
+            Qt.WindowType.WindowTitleHint |
+            Qt.WindowType.WindowSystemMenuHint |
+            Qt.WindowType.WindowCloseButtonHint |
+            Qt.WindowType.WindowMaximizeButtonHint,
+        )
 
         self.backup = backup
         self.report = load_gpreport(backup.path)
@@ -53,13 +60,6 @@ class ViewWindow(QDialog):
         self.setWindowIcon(app_icon())
         self.resize(1120, 720)
         self.setMinimumSize(920, 620)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog |
-            Qt.WindowType.WindowTitleHint |
-            Qt.WindowType.WindowSystemMenuHint |
-            Qt.WindowType.WindowCloseButtonHint |
-            Qt.WindowType.WindowMaximizeButtonHint
-        )
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -94,14 +94,17 @@ class ViewWindow(QDialog):
         logo_icon = QLabel()
         logo_icon.setObjectName("BrandIcon")
         logo_icon.setFixedSize(38, 38)
-        logo_icon.setPixmap(
-            QPixmap(str(APP_LOGO_PATH)).scaled(
-                38,
-                38,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+        _logo_px = QPixmap()
+        if APP_LOGO_PATH.exists():
+            _logo_px.load(str(APP_LOGO_PATH))
+        if not _logo_px.isNull():
+            logo_icon.setPixmap(
+                _logo_px.scaled(
+                    38, 38,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             )
-        )
 
         logo_text = QVBoxLayout()
         logo_text.setSpacing(1)

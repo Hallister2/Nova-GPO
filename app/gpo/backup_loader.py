@@ -59,10 +59,19 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
     _SCRIPT_EXT = {".ps1", ".bat", ".cmd", ".vbs", ".js"}
 
     applocker_files: list[Path] = []
+    comment_files:   list[Path] = []
 
     for path in all_files:
         name_lower = path.name.lower()
         suffix     = path.suffix.lower()
+
+        if name_lower == "gpo.cmt":
+            comment_files.append(path)
+            continue
+
+        if name_lower == "comment.cmtx":
+            comment_files.append(path)
+            continue
 
         if suffix == ".xml":
             if name_lower in _SKIP_XML:
@@ -88,6 +97,7 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
 
     settings: list[GpoSetting] = []
     settings.extend(_load_backup_metadata(root))
+    settings.extend(_load_comment_files(comment_files, root))
     settings.extend(_load_preference_xml(pref_xml_files, root))
     settings.extend(_load_xml(xml_files, root))
     settings.extend(_load_applocker(applocker_files, root))
@@ -123,6 +133,81 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
 
 
 # ── Sub-parsers ───────────────────────────────────────────────────────────────
+
+def _load_comment_files(files: list[Path], root: Path) -> list[GpoSetting]:
+    """Parse GPO.cmt (free-text admin comment) and comment.cmtx (per-policy change notes)."""
+    items: list[GpoSetting] = []
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        name_lower = path.name.lower()
+
+        if name_lower == "gpo.cmt":
+            try:
+                text = _read_text_with_fallback(path).strip()
+            except OSError:
+                continue
+            if text:
+                items.append(GpoSetting(
+                    key=f"comment::gpo.cmt::comment",
+                    category="Backup Metadata",
+                    name="GPO Comment",
+                    value=text,
+                    source_file=relative,
+                ))
+
+        elif name_lower == "comment.cmtx":
+            # XML format: policyComments > comments > admTemplate > comment[@policyRef]
+            # resolved via resources > stringTable > string[@id]
+            try:
+                data = path.read_bytes()
+                tree: ET.Element | None = None
+                for enc in ("utf-8-sig", "utf-8", "utf-16"):
+                    try:
+                        tree = ET.fromstring(data.decode(enc))
+                        break
+                    except (UnicodeError, ET.ParseError):
+                        continue
+                if tree is None:
+                    continue
+            except OSError:
+                continue
+
+            # Build id→text lookup from <stringTable>
+            string_map: dict[str, str] = {}
+            for string_elem in tree.iter():
+                if string_elem.tag.split("}")[-1] == "string":
+                    sid = string_elem.get("id", "").strip()
+                    text = (string_elem.text or "").strip()
+                    if sid and text:
+                        string_map[sid] = text
+
+            # Emit one setting per comment with resolved text
+            for comment_elem in tree.iter():
+                if comment_elem.tag.split("}")[-1] != "comment":
+                    continue
+                policy_ref = comment_elem.get("policyRef", "").strip()
+                raw_text   = comment_elem.get("commentText", "").strip()
+                # Resolve $(resource.id) tokens
+                if raw_text.startswith("$(resource.") and raw_text.endswith(")"):
+                    res_id = raw_text[len("$(resource."):-1]
+                    resolved = string_map.get(res_id, raw_text)
+                else:
+                    resolved = raw_text or string_map.get(policy_ref, "")
+
+                if not resolved:
+                    continue
+
+                display_name = policy_ref.split(":")[-1] if ":" in policy_ref else policy_ref
+                items.append(GpoSetting(
+                    key=f"comment::cmtx::{policy_ref}".lower(),
+                    category="Policy Comments",
+                    name=display_name,
+                    value=resolved,
+                    source_file=relative,
+                ))
+
+    return items
+
 
 def _load_preference_xml(files: list[Path], root: Path) -> list[GpoSetting]:
     items: list[GpoSetting] = []

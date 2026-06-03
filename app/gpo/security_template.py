@@ -28,17 +28,18 @@ _log = get_logger(__name__)
 # ── Section-to-category mapping ───────────────────────────────────────────────
 
 _SECTION_CATEGORIES: dict[str, str] = {
-    "system access":    "Security Template > Account Policy",
-    "kerberos policy":  "Security Template > Kerberos Policy",
-    "privilege rights": "Security Template > User Rights Assignment",
-    "registry values":  "Security Template > Registry Values",
-    "event audit":      "Security Template > Audit Policy",
-    "system log":       "Security Template > System Event Log",
-    "security log":     "Security Template > Security Event Log",
-    "application log":  "Security Template > Application Event Log",
-    "group membership": "Security Template > Restricted Groups",
-    "registry keys":    "Security Template > Registry Key Security",
-    "file security":    "Security Template > File Security",
+    "system access":          "Security Template > Account Policy",
+    "kerberos policy":        "Security Template > Kerberos Policy",
+    "privilege rights":       "Security Template > User Rights Assignment",
+    "registry values":        "Security Template > Registry Values",
+    "event audit":            "Security Template > Audit Policy",
+    "system log":             "Security Template > System Event Log",
+    "security log":           "Security Template > Security Event Log",
+    "application log":        "Security Template > Application Event Log",
+    "group membership":       "Security Template > Restricted Groups",
+    "registry keys":          "Security Template > Registry Key Security",
+    "file security":          "Security Template > File Security",
+    "service general setting":"Security Template > System Services",
 }
 
 # ── Human-readable labels for System Access keys ─────────────────────────────
@@ -128,7 +129,18 @@ def load_security_template(
             section_key = section.lower()
             continue
 
+        # [Service General Setting] uses CSV lines without '=':
+        #   "ServiceName",startup_type,"SDDL"
         if "=" not in line:
+            if section_key == "service general setting" and "," in line:
+                parts = line.split(",", 2)
+                svc_name = parts[0].strip().strip('"')
+                svc_rest = ",".join(parts[1:]).strip()
+                if svc_name:
+                    category = _SECTION_CATEGORIES.get(section_key, f"Security Template > {section}")
+                    setting = _parse_service_setting(svc_name, svc_rest, category, relative)
+                    if setting:
+                        items.append(setting)
             continue
 
         name_raw, _, value_raw = line.partition("=")
@@ -199,6 +211,9 @@ def _parse_entry(
 
     if section_key == "registry keys":
         return _parse_registry_key_security(name, value, category, relative)
+
+    if section_key == "service general setting":
+        return _parse_service_setting(name, value, category, relative)
 
     # Generic fallback
     return GpoSetting(
@@ -353,6 +368,41 @@ def _summarize_sddl(sddl: str) -> str:
     # Show truncated raw SDDL so operators can check it
     truncated = sddl if len(sddl) <= 120 else sddl[:120] + "…"
     return f"{ace_summary}; SDDL: {truncated}"
+
+
+_SERVICE_STARTUP: dict[str, str] = {
+    "2": "Automatic",
+    "3": "Manual",
+    "4": "Disabled",
+}
+
+
+def _parse_service_setting(
+    name: str, value: str, category: str, relative: str,
+) -> GpoSetting:
+    # Format: "ServiceName",startup_type,"SDDL"
+    # The name field is the raw line key (everything before '=') which may itself
+    # be quoted — strip quotes and commas to get the actual service name.
+    # The value field is: startup_type_int,"sddl_or_empty"
+    service_name = name.strip().strip('"')
+
+    parts = value.split(",", 1)
+    startup_raw = parts[0].strip()
+    startup = _SERVICE_STARTUP.get(startup_raw, f"type {startup_raw}")
+
+    # Optional SDDL for the service DACL
+    sddl = parts[1].strip().strip('"') if len(parts) > 1 else ""
+    decoded = f"Startup: {startup}"
+    if sddl:
+        decoded += f"; ACL: {_summarize_sddl(sddl)}"
+
+    return GpoSetting(
+        key=f"sectmpl::{relative}::service::{service_name}".lower(),
+        category=category,
+        name=service_name,
+        value=decoded,
+        source_file=relative,
+    )
 
 
 def _parse_file_security(
