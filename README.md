@@ -1,5 +1,5 @@
 <p align="center">
-<img width="591" height="172" alt="Nova GPO - Application Logo" src="https://github.com/user-attachments/assets/12f9f171-96cd-42c7-bf58-e2a45c696157" />
+<img width="591" height="172" alt="Nova GPO - Application Logo" src="https://github.com/user-attachments/assets/cfcab1d4-aef0-4251-8300-b867e53891e9" />
 </p>
 # Nova GPO
 
@@ -14,10 +14,19 @@ preserve compare results independently from the original backup folders.
 
 - **Backup Library** - Scan one or more backup source directories and browse
   discovered GPO backups in a focused library view.
+  <p align="center">
+  <img width="1194" height="936" alt="image" src="https://github.com/user-attachments/assets/a9fa27d5-2801-4c35-b8f7-3f53fa7c8ce9" />
+  </p>
 - **GPO Viewer** - Open a backup and review metadata, configured policies, raw
   parsed settings, and source artifacts.
+  <p align="center">
+  <img width="1194" height="936" alt="image" src="https://github.com/user-attachments/assets/2e00171a-aa05-4ee6-9080-5a271c34339a" />
+  </p>
 - **Compare Workspace** - Compare two backups with searchable, filterable
   findings for changed, missing, and added policy data.
+  <p align="center">
+  <img width="1322" height="832" alt="image" src="https://github.com/user-attachments/assets/b81868d9-60a0-43f5-8490-eadf47799ffc" />
+  </p>
 - **Review Notes** - Track review status, priority, owner, ticket/change
   references, tags, notes, and supporting evidence for compare findings.
 - **Saved Reports** - Save compare reviews to the local report archive so
