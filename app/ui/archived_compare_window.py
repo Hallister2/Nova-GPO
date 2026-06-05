@@ -32,18 +32,24 @@ from app.ui.widgets import badge
 
 _REVIEW_STATUSES = [
     "Pending Review",
-    "No Action Required",
-    "Update Required",
+    "Add Policy to Align",
+    "Add Setting to Align",
+    "Remove Setting to Align",
+    "Update Setting to Align",
     "Under Investigation",
     "Escalated",
+    "No Action Required",
 ]
 
 _REVIEW_STATUS_COLOR: dict[str, str] = {
-    "Pending Review":      "#C8901A",  # amber  — unreviewed, needs attention
-    "Update Required":     "#C84040",  # red    — action required
-    "Escalated":           "#B040C8",  # purple — urgent
-    "Under Investigation": "#4090C8",  # blue   — being worked
-    "No Action Required":  "#707070",  # gray   — resolved / done
+    "Pending Review":          "#C8901A",  # amber  — unreviewed
+    "Add Policy to Align":     "#3DDC84",  # green  — add whole policy
+    "Add Setting to Align":    "#2EC9A0",  # teal   — add specific settings
+    "Remove Setting to Align": "#FF6060",  # red    — remove settings
+    "Update Setting to Align": "#FF8A1F",  # orange — change a value
+    "Under Investigation":     "#4090C8",  # blue   — being worked
+    "Escalated":               "#B040C8",  # purple — urgent
+    "No Action Required":      "#707070",  # gray   — resolved / done
 }
 
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
@@ -66,6 +72,10 @@ class ArchivedCompareWindow(QDialog):
         self._all_findings = list(self.findings)  # unfiltered copy for search
         self.current_key = ""
         self.loading = False
+        ba = self.payload.get("backup_a") or {}
+        bb = self.payload.get("backup_b") or {}
+        self._backup_a_title = str(ba.get("title") or "Backup A")
+        self._backup_b_title = str(bb.get("title") or "Backup B")
         self.reviews = {
             str(item.get("key", "")): dict(item.get("review", {}))
             for item in self.findings
@@ -317,7 +327,9 @@ class ArchivedCompareWindow(QDialog):
             self.status_badge_slot,
             badge(str(finding.get("status") or "Unknown"), _status_badge_state(finding), min_width=112),
         )
-        self.detail_text.setHtml(_finding_detail_html(finding))
+        self.detail_text.setHtml(
+            _finding_detail_html(finding, self._backup_a_title, self._backup_b_title)
+        )
 
         self.review_status.setCurrentText(str(review.get("status") or "Pending Review"))
         self.review_priority.setCurrentText(str(review.get("priority") or "Normal"))
@@ -437,68 +449,11 @@ def _finding_meta(finding: dict[str, Any]) -> str:
     return scope
 
 
-def _reconciliation_steps(finding: dict[str, Any]) -> list[tuple[str, str]]:
-    """Return (label, description) pairs describing what each backup needs to align."""
-    status = str(finding.get("status") or "")
-    state_a = str(finding.get("state_a") or "").strip()
-    state_b = str(finding.get("state_b") or "").strip()
-    changes: list[str] = [str(c) for c in (finding.get("changes") or []) if c]
-
-    steps: list[tuple[str, str]] = []
-
-    if status == "Added":
-        state_note = f" — set state to \"{state_b}\"" if state_b and state_b != "Not present" else ""
-        steps.append(("Add to Backup A", f"This policy is only in Backup B{state_note}."))
-        for c in changes:
-            if c.startswith("Added configured value:"):
-                steps.append(("Configure in A", c.split(":", 1)[1].strip()))
-
-    elif status in ("Removed", "Missing in B"):
-        state_note = f" — set state to \"{state_a}\"" if state_a and state_a != "Not present" else ""
-        steps.append(("Add to Backup B", f"This policy is only in Backup A{state_note}."))
-        for c in changes:
-            if c.startswith("Added configured value:"):
-                steps.append(("Configure in B", c.split(":", 1)[1].strip()))
-
-    elif status == "Missing in A":
-        state_note = f" — set state to \"{state_b}\"" if state_b and state_b != "Not present" else ""
-        steps.append(("Add to Backup A", f"This policy is only in Backup B{state_note}."))
-
-    elif status == "Different":
-        if state_a and state_b and state_a.lower() != state_b.lower():
-            steps.append(("State differs", f"Backup A: \"{state_a}\"  →  Backup B: \"{state_b}\""))
-
-        for c in changes:
-            cl = c.lower()
-            if cl.startswith("state changed"):
-                continue  # already handled above
-            elif cl.startswith("no setting-level differences"):
-                steps.append(("Note", "Difference may be metadata, formatting, or an unsupported parser detail."))
-            elif c.startswith("Added configured value in Backup B:"):
-                val = c.split("Added configured value in Backup B:", 1)[1].strip()
-                steps.append(("Backup A is missing", val))
-            elif c.startswith("Removed configured value from Backup B:"):
-                val = c.split("Removed configured value from Backup B:", 1)[1].strip()
-                steps.append(("Backup B is missing", val))
-            elif c.startswith("Added configured value:"):
-                steps.append(("Backup A is missing", c.split(":", 1)[1].strip()))
-            elif c.startswith("Removed configured value:"):
-                steps.append(("Backup B is missing", c.split(":", 1)[1].strip()))
-            elif "supported-on text changed" in cl:
-                steps.append(("Policy Definition", "Review and align the Supported On attribute."))
-            elif cl.startswith("type changed from"):
-                steps.append(("Policy Type", c))
-            elif cl.startswith("category changed from"):
-                steps.append(("Category", c))
-            else:
-                steps.append(("Review", c))
-
-    return steps
-
-
-def _finding_detail_html(finding: dict[str, Any]) -> str:
-    # Dark theme palette (matches executive_dark)
-    C_BG     = "#101112"
+def _finding_detail_html(
+    finding: dict[str, Any],
+    backup_a_title: str = "Backup A",
+    backup_b_title: str = "Backup B",
+) -> str:
     C_RAISED = "#202123"
     C_BORDER = "rgba(255,255,255,0.08)"
     C_TEXT   = "#F4F6F8"
@@ -509,123 +464,281 @@ def _finding_detail_html(finding: dict[str, Any]) -> str:
     C_RED    = "#FF4D4D"
     C_BLUE   = "#82B6FF"
 
-    parts = [f"<div style='font-size:13px; line-height:1.65; color:{C_TEXT};'>"]
+    status      = str(finding.get("status") or "Unknown")
+    name        = str(finding.get("name") or finding.get("key") or "")
+    scope       = str(finding.get("scope") or "")
+    cat         = str(finding.get("category") or "").strip()
+    policy_type = str(finding.get("policy_type") or "").strip()
+    supported   = str(finding.get("supported") or "").strip()
+    state_a     = str(finding.get("state_a") or "").strip()
+    state_b     = str(finding.get("state_b") or "").strip()
+    changes: list[str]  = [str(c) for c in (finding.get("changes") or []) if c]
+    evidence: list[str] = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
 
-    # ── To Align These Policies ───────────────────────────────────────────────
-    steps = _reconciliation_steps(finding)
-    if steps:
-        parts.append(
-            f"<p style='color:{C_BLUE}; font-weight:800; font-size:12px; margin:0 0 6px 0;"
-            f" text-transform:uppercase; letter-spacing:0.5px; padding:6px 10px;"
-            f" background:{C_RAISED}; border-left:3px solid {C_BLUE};'>"
-            f"To Align These Policies</p>"
-        )
-        parts.append(
-            f"<table cellspacing='0' cellpadding='0'"
-            f" style='width:100%; border-collapse:collapse; margin-bottom:18px;'>"
-        )
-        for i, (label, desc) in enumerate(steps):
-            row_bg = "#191b1d" if i % 2 == 0 else "transparent"
-            cl = label.lower()
-            if "missing" in cl or "add to" in cl or "configure" in cl:
-                label_color = C_ORANGE
-            elif "differs" in cl or "review" in cl or "note" in cl:
-                label_color = C_MUTED
-            else:
-                label_color = C_BLUE
-            parts.append(
-                f"<tr style='background:{row_bg};'>"
-                f"<td style='color:{label_color}; font-size:11px; font-weight:700;"
-                f" text-transform:uppercase; letter-spacing:0.3px; width:155px;"
-                f" white-space:nowrap; padding:7px 10px 7px 12px; vertical-align:top;"
-                f" border-bottom:1px solid {C_BORDER};'>{_esc(label)}</td>"
-                f"<td style='color:{C_TEXT}; font-size:12px; line-height:1.6;"
-                f" padding:7px 12px 7px 4px; vertical-align:top;"
-                f" border-bottom:1px solid {C_BORDER};'>{_esc(desc)}</td>"
-                f"</tr>"
-            )
-        parts.append("</table>")
-
-    # ── Actual Delta ──────────────────────────────────────────────────────────
-    parts.append(
-        f"<p style='color:{C_ORANGE}; font-weight:800; font-size:12px; margin:0 0 8px 0;"
-        f" text-transform:uppercase; letter-spacing:0.5px; padding:5px 10px;"
-        f" background:{C_RAISED}; border-left:3px solid {C_ORANGE};'>Actual Delta</p>"
+    path = (
+        f"{scope}  ›  {cat}"
+        if cat and cat not in ("Not reported", "Not categorized")
+        else scope
     )
 
-    changes = finding.get("changes")
-    if isinstance(changes, list) and changes:
-        parts.append(f"<ul style='margin:0 0 18px 0; padding-left:18px; line-height:1.8;'>")
-        for change in changes:
-            cs = str(change)
-            cl = cs.lower()
-            if cl.startswith("added"):
-                color = C_GREEN
-            elif cl.startswith("removed"):
-                color = C_RED
-            else:
-                color = C_TEXT
-            parts.append(f"<li style='color:{color}; padding:2px 0;'>{_esc(cs)}</li>")
-        parts.append("</ul>")
-    else:
-        parts.append(
-            f"<p style='color:{C_MUTED}; font-style:italic; margin-bottom:16px;'>"
-            "No setting-level changes were recorded in the archive.</p>"
+    # ── classify change strings ───────────────────────────────────────────────
+    state_change_str: str | None = None
+    a_needs:      list[str] = []   # B has; A must add
+    b_needs:      list[str] = []   # A has; B must add / A must remove
+    other_changes: list[str] = []
+
+    for c in changes:
+        cl = c.lower()
+        if cl.startswith("state changed"):
+            state_change_str = c
+        elif c.startswith("Added configured value in Backup B:"):
+            a_needs.append(c.split("Added configured value in Backup B:", 1)[1].strip())
+        elif c.startswith("Removed configured value from Backup B:"):
+            b_needs.append(c.split("Removed configured value from Backup B:", 1)[1].strip())
+        elif c.startswith("Added configured value:"):
+            a_needs.append(c.split("Added configured value:", 1)[1].strip())
+        elif c.startswith("Removed configured value:"):
+            b_needs.append(c.split("Removed configured value:", 1)[1].strip())
+        elif cl.startswith("policy is missing") or "no setting-level differences" in cl:
+            pass  # covered by status header or intentionally suppressed
+        else:
+            other_changes.append(c)
+
+    # ── ILT / targeting from evidence ────────────────────────────────────────
+    ilt_kw  = ("ilt", "target", "wmi")
+    ilt_ev  = [e for e in evidence if any(k in e.lower() for k in ilt_kw)]
+    other_ev = [e for e in evidence if e not in ilt_ev]
+
+    # ── per-status header + action wording ───────────────────────────────────
+    if status in ("Added", "Missing in A"):
+        header_color = C_GREEN
+        header_text  = f"Update {backup_a_title} — add this policy to align with {backup_b_title}"
+        action_label = f"Add to {backup_a_title}"
+        action_color = C_GREEN
+        state_show   = state_b
+    elif status in ("Removed", "Missing in B"):
+        header_color = C_RED
+        header_text  = f"Update {backup_b_title} — add this policy to align with {backup_a_title}"
+        action_label = f"Add to {backup_b_title}"
+        action_color = C_RED
+        state_show   = state_a
+    else:  # Different
+        header_color = C_ORANGE
+        action_color = C_ORANGE
+        state_show   = ""
+        has_add        = bool(a_needs)
+        has_rem        = bool(b_needs)
+        has_state_diff = (state_a.lower() != state_b.lower()) and bool(state_a or state_b)
+        if has_add and has_rem:
+            n_a = len(a_needs)
+            n_r = len(b_needs)
+            header_text = (
+                f"Update {backup_a_title} — add {n_a} setting{'s' if n_a != 1 else ''} "
+                f"and remove {n_r} setting{'s' if n_r != 1 else ''} to align"
+            )
+        elif has_add:
+            n = len(a_needs)
+            header_text = (
+                f"Update {backup_a_title} — add {n} setting{'s' if n != 1 else ''} "
+                f"to align with {backup_b_title}"
+            )
+        elif has_rem:
+            n = len(b_needs)
+            header_text = (
+                f"Update {backup_a_title} — remove {n} setting{'s' if n != 1 else ''} "
+                f"to align with {backup_b_title}"
+            )
+        elif has_state_diff or state_change_str:
+            header_text = (
+                f"Update {backup_a_title} — change policy state to align with {backup_b_title}"
+            )
+        else:
+            header_text = (
+                f"Review {backup_a_title} — settings may need alignment with {backup_b_title}"
+            )
+        action_label = "Update the following"
+
+    parts: list[str] = [f"<div style='font-size:13px; line-height:1.65; color:{C_TEXT};'>"]
+
+    # ── backup identity strip ─────────────────────────────────────────────────
+    parts.append(
+        f"<table cellspacing='0' cellpadding='0'"
+        f" style='width:100%; border-collapse:collapse; margin-bottom:14px;"
+        f" border:1px solid {C_BORDER}; border-radius:4px;'>"
+        f"<tr>"
+        f"<td width='50%' style='padding:7px 12px; background:{C_RAISED};"
+        f" border-right:1px solid {C_BORDER};'>"
+        f"<span style='color:{C_MUTED}; font-size:10px; font-weight:700;"
+        f" text-transform:uppercase; letter-spacing:0.4px;'>Backup A</span><br>"
+        f"<span style='color:{C_LABEL}; font-size:12px;'>{_esc(backup_a_title)}</span>"
+        f"</td>"
+        f"<td width='50%' style='padding:7px 12px; background:{C_RAISED};'>"
+        f"<span style='color:{C_MUTED}; font-size:10px; font-weight:700;"
+        f" text-transform:uppercase; letter-spacing:0.4px;'>Backup B</span><br>"
+        f"<span style='color:{C_LABEL}; font-size:12px;'>{_esc(backup_b_title)}</span>"
+        f"</td>"
+        f"</tr>"
+        f"</table>"
+    )
+
+    # header banner
+    parts.append(
+        f"<p style='color:{header_color}; font-weight:800; font-size:12px;"
+        f" margin:0 0 14px 0; text-transform:uppercase; letter-spacing:0.5px;"
+        f" padding:8px 12px; background:{C_RAISED}; border-left:3px solid {header_color};'>"
+        f"{_esc(header_text)}</p>"
+    )
+
+    # sub-heading
+    parts.append(
+        f"<p style='color:{C_BLUE}; font-weight:700; font-size:11px;"
+        f" text-transform:uppercase; letter-spacing:0.5px; margin:0 0 10px 0;'>"
+        f"To align the policies:</p>"
+    )
+
+    # ── document table ────────────────────────────────────────────────────────
+    parts.append(
+        f"<table cellspacing='0' cellpadding='0'"
+        f" style='width:100%; border-collapse:collapse; margin-bottom:16px;'>"
+    )
+
+    def dr(label: str, body_html: str, lc: str = C_MUTED) -> str:
+        return (
+            f"<tr>"
+            f"<td style='color:{lc}; font-size:11px; font-weight:700; text-transform:uppercase;"
+            f" letter-spacing:0.3px; width:140px; white-space:nowrap; padding:7px 12px 7px 0;"
+            f" vertical-align:top; border-bottom:1px solid {C_BORDER};'>{_esc(label)}</td>"
+            f"<td style='color:{C_TEXT}; font-size:12px; line-height:1.6; padding:7px 0 7px 4px;"
+            f" vertical-align:top; border-bottom:1px solid {C_BORDER};'>{body_html}</td>"
+            f"</tr>"
         )
 
-    # ── Supporting Evidence ───────────────────────────────────────────────────
-    evidence = finding.get("supporting_evidence")
-    if isinstance(evidence, list) and evidence:
+    def sep_row(label: str, color: str) -> str:
+        return (
+            f"<tr><td colspan='2' style='padding:12px 0 6px 0; color:{color};"
+            f" font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.4px;"
+            f" border-top:2px solid {C_BORDER};'>{_esc(label)}:</td></tr>"
+        )
+
+    if path:
+        parts.append(dr("Path", f"<span style='color:{C_TEXT};'>{_esc(path)}</span>"))
+    if name:
+        parts.append(dr("Settings", f"<span style='color:{C_TEXT};'>{_esc(name)}</span>"))
+    if supported:
+        parts.append(dr("Supported On", f"<span style='color:{C_MUTED};'>{_esc(supported)}</span>"))
+
+    parts.append(sep_row(action_label, action_color))
+
+    # State
+    if status == "Different":
+        if state_a.lower() != state_b.lower() and (state_a or state_b):
+            state_html = (
+                f"<span style='color:{C_MUTED};'>{_esc(state_a or 'Not configured')}</span>"
+                f"<span style='color:{C_ORANGE};'> &rarr; </span>"
+                f"<span style='color:{C_ORANGE}; font-weight:700;'>"
+                f"{_esc(state_b or 'Not configured')}</span>"
+            )
+            parts.append(dr("State", state_html, C_LABEL))
+        elif state_change_str:
+            parts.append(dr("State", f"<span style='color:{C_ORANGE};'>{_esc(state_change_str)}</span>", C_LABEL))
+        elif state_b:
+            parts.append(dr("State", f"<span style='color:{C_TEXT}; font-weight:700;'>{_esc(state_b)}</span>", C_LABEL))
+    elif state_show:
+        parts.append(dr("State", f"<span style='color:{C_TEXT}; font-weight:700;'>{_esc(state_show)}</span>", C_LABEL))
+
+    # Additional setting information
+    if status == "Different":
+        add_lines: list[str] = []
+        for v in a_needs:
+            add_lines.append(f"<span style='color:{C_GREEN};'>+ {_esc(v)}</span>")
+        for v in b_needs:
+            add_lines.append(f"<span style='color:{C_RED};'>&#8722; {_esc(v)}</span>")
+        if add_lines:
+            parts.append(dr("Additional setting information", "<br>".join(add_lines), C_LABEL))
+        elif other_changes:
+            parts.append(dr(
+                "Additional setting information",
+                "<br>".join(f"<span style='color:{C_TEXT};'>{_esc(c)}</span>" for c in other_changes),
+                C_LABEL,
+            ))
+            other_changes = []
+    else:
+        all_vals = a_needs + b_needs
+        if all_vals:
+            parts.append(dr(
+                "Additional setting information",
+                "<br>".join(f"<span style='color:{C_TEXT};'>{_esc(v)}</span>" for v in all_vals),
+                C_LABEL,
+            ))
+
+    # Targeting information
+    if ilt_ev:
+        parts.append(dr(
+            "Targeting information",
+            "<br>".join(f"<span style='color:{C_TEXT};'>{_esc(i)}</span>" for i in ilt_ev),
+            C_LABEL,
+        ))
+    else:
+        parts.append(dr(
+            "Targeting information",
+            f"<span style='color:{C_MUTED}; font-style:italic;'>None</span>",
+            C_LABEL,
+        ))
+
+    parts.append("</table>")
+
+    # ── overflow changes not captured above ───────────────────────────────────
+    if other_changes:
         parts.append(
-            f"<p style='color:{C_LABEL}; font-weight:800; font-size:12px; margin:0 0 8px 0;"
+            f"<p style='color:{C_LABEL}; font-weight:800; font-size:12px; margin:14px 0 8px 0;"
+            f" text-transform:uppercase; letter-spacing:0.5px; padding:5px 10px;"
+            f" background:{C_RAISED}; border-left:3px solid {C_LABEL};'>Additional Changes</p>"
+        )
+        parts.append("<ul style='margin:0 0 16px 0; padding-left:18px; line-height:1.8;'>")
+        for c in other_changes:
+            cl = c.lower()
+            color = C_GREEN if cl.startswith("added") else (C_RED if cl.startswith("removed") else C_TEXT)
+            parts.append(f"<li style='color:{color}; padding:2px 0;'>{_esc(c)}</li>")
+        parts.append("</ul>")
+
+    # ── supporting evidence (non-ILT) ─────────────────────────────────────────
+    if other_ev:
+        parts.append(
+            f"<p style='color:{C_LABEL}; font-weight:800; font-size:12px; margin:14px 0 8px 0;"
             f" text-transform:uppercase; letter-spacing:0.5px; padding:5px 10px;"
             f" background:{C_RAISED}; border-left:3px solid {C_LABEL};'>Supporting Evidence</p>"
         )
-        parts.append(f"<ul style='margin:0; padding-left:18px; line-height:1.8;'>")
-        for ev in evidence:
-            ev_str = str(ev)
-            ev_lower = ev_str.lower()
-            if "added" in ev_lower:
-                accent = C_GREEN
-            elif "removed" in ev_lower or "missing" in ev_lower:
-                accent = C_RED
-            else:
-                accent = C_LABEL
-
-            # Split "SettingName (source/path): description text" for readability
-            if "): " in ev_str:
-                src, _, desc = ev_str.partition("): ")
-                parts.append("<li style='padding:3px 0;'>")
+        parts.append("<ul style='margin:0; padding-left:18px; line-height:1.8;'>")
+        for ev in other_ev:
+            ev_lower = ev.lower()
+            accent = C_GREEN if "added" in ev_lower else (C_RED if ("removed" in ev_lower or "missing" in ev_lower) else C_LABEL)
+            if "): " in ev:
+                src, _, desc = ev.partition("): ")
                 parts.append(
+                    f"<li style='padding:3px 0;'>"
                     f"<span style='color:{C_MUTED}; font-size:11px;'>{_esc(src)})</span><br>"
-                    f"<span style='color:{accent}; padding-left:10px;'>↳ {_esc(desc)}</span>"
+                    f"<span style='color:{accent}; padding-left:10px;'>&#8627; {_esc(desc)}</span>"
+                    f"</li>"
                 )
-                parts.append("</li>")
             else:
-                parts.append(
-                    f"<li style='color:{accent}; padding:3px 0;'>{_esc(ev_str)}</li>"
-                )
+                parts.append(f"<li style='color:{accent}; padding:3px 0;'>{_esc(ev)}</li>")
         parts.append("</ul>")
 
-    # ── Policy Definition ─────────────────────────────────────────────────────
-    category = str(finding.get("category") or "").strip()
-    policy_type = str(finding.get("policy_type") or "").strip()
-    source = str(finding.get("source") or "").strip()
-    supported = str(finding.get("supported") or "").strip()
-
-    def_rows: list[str] = []
-    if category and category not in ("Not reported", "Not categorized"):
-        def_rows.append(("Category", category))
+    # ── policy definition footer ──────────────────────────────────────────────
+    def_rows: list[tuple[str, str]] = []
+    if cat and cat not in ("Not reported", "Not categorized"):
+        def_rows.append(("Category", cat))
     if policy_type:
         def_rows.append(("Type", policy_type))
     if supported:
         def_rows.append(("Supported On", supported))
+    source = str(finding.get("source") or "").strip()
     if source:
         def_rows.append(("Source", source))
 
     if def_rows:
         parts.append(
-            f"<p style='color:{C_LABEL}; font-weight:800; font-size:12px; margin:16px 0 8px 0;"
+            f"<p style='color:{C_LABEL}; font-weight:800; font-size:12px; margin:14px 0 8px 0;"
             f" text-transform:uppercase; letter-spacing:0.5px; padding:5px 10px;"
             f" background:{C_RAISED}; border-left:3px solid {C_LABEL};'>Policy Definition</p>"
         )
@@ -636,20 +749,14 @@ def _finding_detail_html(finding: dict[str, Any]) -> str:
         for lbl, val in def_rows:
             parts.append(
                 f"<tr>"
-                f"<td style='color:{C_MUTED}; font-size:11px; font-weight:700;"
-                f" text-transform:uppercase; letter-spacing:0.4px; width:95px;"
-                f" white-space:nowrap; padding:5px 10px 5px 0; vertical-align:top;"
-                f" border-bottom:1px solid {C_BORDER};'>{_esc(lbl)}</td>"
-                f"<td style='color:{C_TEXT}; font-size:12px; padding:5px 0;"
-                f" vertical-align:top; border-bottom:1px solid {C_BORDER};'>{_esc(val)}</td>"
+                f"<td style='color:{C_MUTED}; font-size:11px; font-weight:700; text-transform:uppercase;"
+                f" letter-spacing:0.4px; width:95px; white-space:nowrap; padding:5px 10px 5px 0;"
+                f" vertical-align:top; border-bottom:1px solid {C_BORDER};'>{_esc(lbl)}</td>"
+                f"<td style='color:{C_TEXT}; font-size:12px; padding:5px 0; vertical-align:top;"
+                f" border-bottom:1px solid {C_BORDER};'>{_esc(val)}</td>"
                 f"</tr>"
             )
         parts.append("</table>")
-    elif not category:
-        parts.append(
-            f"<p style='color:{C_MUTED}; font-size:11px; font-style:italic; margin-top:12px;'>"
-            f"Category not recorded — re-save this comparison to capture full policy metadata.</p>"
-        )
 
     parts.append("</div>")
     return "".join(parts)

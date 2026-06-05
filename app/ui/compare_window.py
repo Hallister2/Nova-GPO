@@ -41,10 +41,13 @@ from app.gpo.comparison_model import (
 
 _REVIEW_STATUSES = [
     "Pending Review",
-    "No Action Required",
-    "Update Required",
+    "Add Policy to Align",
+    "Add Setting to Align",
+    "Remove Setting to Align",
+    "Update Setting to Align",
     "Under Investigation",
     "Escalated",
+    "No Action Required",
 ]
 
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
@@ -1065,16 +1068,18 @@ class CompareWindow(QDialog):
         menu.exec(QCursor.pos())
 
     def _apply_bulk_review(self, status: str) -> None:
+        updated_keys: set[str] = set()
         for item in self.filtered_items:
             review = self._review_for_item(item)
             if review.get("status", "Pending Review") != "Pending Review":
                 continue
             review["status"] = status
             review["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            updated_keys.add(item.key)
         save_review_notes(self.backup_a.path, self.backup_b.path, self.review_notes)
         self._update_review_progress()
         for item in self.filtered_items[: self._visible_count]:
-            if item.key in self._review_badges:
+            if item.key in updated_keys and item.key in self._review_badges:
                 _apply_review_badge(self._review_badges[item.key], status)
         if self.review_filter.currentText() != "All Reviews":
             self._apply_filters()
@@ -1126,10 +1131,13 @@ def _policy_type(item: PolicyDiff) -> str:
 
 def _review_badge_state(status: str) -> str:
     return {
-        "No Action Required": "valid",
-        "Update Required": "review",
-        "Under Investigation": "unknown",
-        "Escalated": "removed",
+        "No Action Required":      "valid",
+        "Add Policy to Align":     "added",
+        "Add Setting to Align":    "added",
+        "Remove Setting to Align": "removed",
+        "Update Setting to Align": "review",
+        "Under Investigation":     "unknown",
+        "Escalated":               "removed",
     }.get(status, "empty")
 
 
