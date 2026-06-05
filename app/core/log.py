@@ -5,7 +5,7 @@ import logging.handlers
 
 from app.core.settings import USER_DATA_DIR
 
-_LOG_DIR = USER_DATA_DIR / "logs"
+_LOG_DIR = USER_DATA_DIR / "Logs"
 _LOG_FILE = _LOG_DIR / "nova-gpo.log"
 _MAX_BYTES = 2 * 1024 * 1024  # 2 MB per file
 _BACKUP_COUNT = 3

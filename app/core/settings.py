@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,18 +50,39 @@ COMPANY_NAME = "Hallister Labs"
 APP_NAME = "Nova GPO"
 
 
+def _documents_folder() -> Path:
+    """Return the user's Documents folder, respecting folder redirection via the registry."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            ) as key:
+                path, _ = winreg.QueryValueEx(key, "Personal")
+            return Path(path)
+        except Exception:
+            pass
+    return Path.home() / "Documents"
+
+
 def _user_data_root() -> Path:
-    base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
-    if base:
-        return Path(base) / COMPANY_NAME / APP_NAME
-
-    return Path.home() / f".{COMPANY_NAME.lower().replace(' ', '-')}" / APP_NAME
+    return _documents_folder() / APP_NAME
 
 
+# ── canonical path structure ──────────────────────────────────────────────────
 USER_DATA_DIR = _user_data_root()
-CONFIG_DIR = USER_DATA_DIR
+CONFIG_DIR    = USER_DATA_DIR / "Config"
+REPORTS_DIR   = USER_DATA_DIR / "Reports"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
-LEGACY_CONFIG_DIR = APP_ROOT / "config"
+
+# ── legacy paths ──────────────────────────────────────────────────────────────
+# Old APPDATA location used before moving to Documents
+_LEGACY_APPDATA_DIR = (
+    Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    / COMPANY_NAME / APP_NAME
+)
+LEGACY_CONFIG_DIR    = APP_ROOT / "config"
 LEGACY_SETTINGS_PATH = LEGACY_CONFIG_DIR / "settings.json"
 
 
@@ -82,10 +104,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+def _ensure_data_dirs() -> None:
+    """Create the full data directory tree under Documents/Nova GPO if missing."""
+    for directory in (
+        CONFIG_DIR,
+        REPORTS_DIR,
+        USER_DATA_DIR / "Library" / "Compares",
+        USER_DATA_DIR / "Reviews",
+        USER_DATA_DIR / "Logs",
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
 def load_settings() -> dict[str, Any]:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_data_dirs()
 
     if not SETTINGS_PATH.exists():
+        _migrate_from_appdata()
         migrated = _load_legacy_settings()
         settings = _migrate_settings(_merge_defaults(DEFAULT_SETTINGS, migrated or {}))
         save_settings(settings)
@@ -144,13 +179,39 @@ def _migrate_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_legacy_settings() -> dict[str, Any] | None:
-    if not LEGACY_SETTINGS_PATH.exists():
-        return None
+    # Check new Config subfolder first, then old app-root config dir
+    candidates = [CONFIG_DIR / "settings.json", LEGACY_SETTINGS_PATH]
+    for path in candidates:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                return loaded if isinstance(loaded, dict) else None
+            except (OSError, json.JSONDecodeError):
+                pass
+    return None
 
-    try:
-        with LEGACY_SETTINGS_PATH.open("r", encoding="utf-8") as handle:
-            loaded = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
 
-    return loaded if isinstance(loaded, dict) else None
+def _migrate_from_appdata() -> None:
+    """One-time migration: copy data from the old %APPDATA% location to Documents."""
+    if not _LEGACY_APPDATA_DIR.exists():
+        return
+
+    # Map old path → new path
+    moves = [
+        (_LEGACY_APPDATA_DIR / "settings.json",        CONFIG_DIR / "settings.json"),
+        (_LEGACY_APPDATA_DIR / "library" / "compares",  USER_DATA_DIR / "Library" / "Compares"),
+        (_LEGACY_APPDATA_DIR / "reviews",               USER_DATA_DIR / "Reviews"),
+    ]
+
+    for src, dst in moves:
+        if not src.exists():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+        except Exception:
+            pass

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +12,15 @@ from app.core.log import get_logger
 from app.gpo.backup_catalog import read_display_name
 
 _log = get_logger(__name__)
+
+
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, clearing read-only flags on Windows if needed."""
+    def _on_error(func, p, _exc_info):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=_on_error)
+
 
 ARCHIVE_DIR_NAME = ".Archived"
 ARCHIVE_META_NAME = ".nova_archive.json"
@@ -122,7 +133,7 @@ def purge_expired_archives(roots: list[str], retention_days: int) -> int:
             continue
 
         _log.info("Purged expired archive: %s (archived %s)", archived_path, archived.archived_at)
-        shutil.rmtree(archived_path)
+        _rmtree(archived_path)
         removed += 1
 
     _log.info("Purge complete: removed %d expired archive(s)", removed)
@@ -135,7 +146,7 @@ def permanently_delete_archived_backup(archived_path: str) -> None:
         raise FileNotFoundError(f"Archived backup was not found: {archived_path}")
 
     _log.info("Permanently deleting archived backup: %s", archived_path)
-    shutil.rmtree(path)
+    _rmtree(path)
 
 
 def _unique_destination(path: Path) -> Path:

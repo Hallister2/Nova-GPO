@@ -9,7 +9,7 @@ from html import escape
 from app.gpo.comparison_model import PolicyDiff, setting_changes
 
 
-ACTIONABLE_STATUSES = {"Added", "Changed", "Removed"}
+ACTIONABLE_STATUSES = {"Added", "Different", "Removed"}
 
 
 def actionable_items(diff_items: list[PolicyDiff]) -> list[PolicyDiff]:
@@ -31,7 +31,7 @@ def csv_report(
         summary = _summary_counts(diff_items)
         writer.writerow(["Total compared", summary["total"]])
         writer.writerow(["Actionable findings", summary["actionable"]])
-        writer.writerow(["Changed", summary["changed"]])
+        writer.writerow(["Different", summary["changed"]])
         writer.writerow(["Missing in A", summary["missing_in_a"]])
         writer.writerow(["Missing in B", summary["missing_in_b"]])
         return output.getvalue()
@@ -159,7 +159,7 @@ def html_report(
         for label, value in [
             ("Total compared", summary["total"]),
             ("Actionable findings", summary["actionable"]),
-            ("Changed", summary["changed"]),
+            ("Different", summary["changed"]),
             ("Missing in A", summary["missing_in_a"]),
             ("Missing in B", summary["missing_in_b"]),
         ]
@@ -441,7 +441,7 @@ def _items_for_profile(diff_items: list[PolicyDiff], profile: str) -> list[Polic
 
 
 def _summary_counts(diff_items: list[PolicyDiff]) -> dict[str, int]:
-    changed = sum(1 for item in diff_items if item.status == "Changed")
+    changed = sum(1 for item in diff_items if item.status == "Different")
     added = sum(1 for item in diff_items if item.status == "Added")
     removed = sum(1 for item in diff_items if item.status == "Removed")
     return {

@@ -398,7 +398,7 @@ def _preference_settings(elem: ET.Element) -> list[str]:
     settings: list[str] = []
 
     for key, value in sorted(elem.attrib.items()):
-        if key in {"clsid", "image", "name", "status", "uid"}:
+        if key in {"changed", "clsid", "created", "image", "name", "status", "uid"}:
             continue
 
         if value.strip():

@@ -7,7 +7,7 @@ from pathlib import Path
 from app.core.settings import APP_ROOT, USER_DATA_DIR
 
 
-REVIEW_DIR = USER_DATA_DIR / "reviews"
+REVIEW_DIR = USER_DATA_DIR / "Reviews"
 LEGACY_REVIEW_DIR = APP_ROOT / "config" / "reviews"
 
 

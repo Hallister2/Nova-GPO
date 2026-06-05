@@ -74,6 +74,7 @@ def _html_theme(t: dict) -> dict:
         "orange":           t["orange"],
         "success":          t["success"],
         "danger":           t["danger"],
+        "blue":             t["blue"],
         "added_bg":         f"rgba({s[0]},{s[1]},{s[2]},0.18)",
         "removed_bg":       f"rgba({d[0]},{d[1]},{d[2]},0.18)",
         "status_added":     f"rgba({s[0]},{s[1]},{s[2]},0.18)",
@@ -320,7 +321,7 @@ class CompareWindow(QDialog):
 
     def _populate_filters(self) -> None:
         self.status_filter.clear()
-        self.status_filter.addItems(["All Changes", "Missing in A", "Changed", "Missing in B", "Same"])
+        self.status_filter.addItems(["All Changes", "Missing in A", "Different", "Missing in B", "Same"])
 
         self.scope_filter.clear()
         self.scope_filter.addItems(["All Scopes", "Computer Configuration", "User Configuration"])
@@ -605,8 +606,8 @@ class CompareWindow(QDialog):
         if item.status == "Removed":
             return "This policy existed in Backup A but is not present in Backup B."
 
-        if item.status == "Changed":
-            return "This policy exists in both backups, but one or more reported values changed."
+        if item.status == "Different":
+            return "This policy exists in both backups, but one or more reported values differ."
 
         return "This policy appears unchanged between the selected backups."
 
@@ -804,61 +805,21 @@ class CompareWindow(QDialog):
         t = self._ht
         definition_policy = item.policy_b or item.policy_a
         status_color = _status_color(item.status, t)
-        delta = _setting_delta_html(item, t)
-
-        state_a = item.state_a or "Not present"
-        state_b = item.state_b or "Not present"
-        states_differ = _norm(state_a) != _norm(state_b)
-
-        if states_differ:
-            state_cell = (
-                f"<td width='50%' style='background:{t['code_bg']}; border-left:1px solid {t['border']}; padding:10px 14px;'>"
-                f"<span style='color:{t['label']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;'>State Change</span><br>"
-                f"<span style='font-size:13px;'><b>{escape(state_a)}</b>"
-                f" <span style='color:{t['label']}; padding:0 5px;'>→</span>"
-                f"<b style='color:{t['orange']};'>{escape(state_b)}</b></span>"
-                f"</td>"
-            )
-        else:
-            state_cell = (
-                f"<td width='50%' style='background:{t['code_bg']}; border-left:1px solid {t['border']}; padding:10px 14px;'>"
-                f"<span style='color:{t['label']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;'>State</span><br>"
-                f"<span style='font-size:13px; color:{t['label']};'>{escape(state_a)}</span>"
-                f"</td>"
-            )
 
         return f"""
 <div style="font-size:13px; line-height:1.6; color:{t['text']};">
-  <table width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px; border-radius:6px; overflow:hidden;">
+  <table width="100%" cellspacing="0" cellpadding="0"
+         style="margin-bottom:14px; border-collapse:collapse;">
     <tr>
-      <td width="50%" style="background:{status_color}; padding:10px 14px;">
-        <span style="color:{t['text']}; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; opacity:0.8;">Status</span><br>
+      <td style="background:{status_color}; padding:8px 14px; border-bottom:2px solid {t['border']};">
+        <span style="color:{t['text']}; font-size:11px; font-weight:700;
+              text-transform:uppercase; letter-spacing:0.5px; opacity:0.8;">Status</span><br>
         <b style="font-size:14px;">{escape(_status_label(item.status))}</b>
       </td>
-      {state_cell}
     </tr>
   </table>
 
-  <p style="color:{t['orange']}; font-weight:800; font-size:12px; margin:0 0 6px 0;
-     padding:5px 10px; border-left:3px solid {t['orange']}; background:{t['code_bg']};
-     text-transform:uppercase; letter-spacing:0.6px;">Actual Delta</p>
-  <div style="margin-bottom:20px;">
-    {delta}
-  </div>
-
-  <p style="font-weight:800; font-size:12px; color:{t['label']}; margin:0 0 6px 0;
-     padding:5px 10px; border-left:3px solid {t['label']}; background:{t['code_bg']};
-     text-transform:uppercase; letter-spacing:0.6px;">Compared Values</p>
-  <table width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:20px;">
-    <tr>
-      <td width="50%" style="vertical-align:top; padding-right:6px;">
-        {_backup_card_html("Backup A", t["label"], item.policy_a, "Not present in Backup A.", item, t, "a")}
-      </td>
-      <td width="50%" style="vertical-align:top; padding-left:6px;">
-        {_backup_card_html("Backup B", t["orange"], item.policy_b, "Not present in Backup B.", item, t, "b")}
-      </td>
-    </tr>
-  </table>
+  {_side_by_side_html(item, t)}
 
   <p style="font-weight:800; font-size:12px; color:{t['label']}; margin:0 0 6px 0;
      padding:5px 10px; border-left:3px solid {t['label']}; background:{t['code_bg']};
@@ -1106,6 +1067,8 @@ class CompareWindow(QDialog):
     def _apply_bulk_review(self, status: str) -> None:
         for item in self.filtered_items:
             review = self._review_for_item(item)
+            if review.get("status", "Pending Review") != "Pending Review":
+                continue
             review["status"] = status
             review["updated_at"] = datetime.now().isoformat(timespec="seconds")
         save_review_notes(self.backup_a.path, self.backup_b.path, self.review_notes)
@@ -1259,6 +1222,126 @@ def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict
             + _settings_html(ilt_rules, item, t, forced_side)
         )
     return html
+
+
+def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
+    """Document-style two-column comparison: Path / Settings / State / Additional info / Targeting."""
+    border  = t["border"]
+    bg      = t["code_bg"]
+    lbl     = t["label"]
+    text    = t["text"]
+    orange  = t["orange"]
+    success = t["success"]
+    danger  = t["danger"]
+
+    policy_a = item.policy_a
+    policy_b = item.policy_b
+
+    # ── per-side helpers ──────────────────────────────────────────────────────
+    def policy_path(policy) -> str:
+        if policy is None:
+            return ""
+        scope = policy.scope or ""
+        cat   = (policy.category or "").strip()
+        if cat and cat not in ("Not reported", "Not categorized"):
+            return f"{scope}  ›  {cat}" if scope else cat
+        return scope
+
+    def regular_and_ilt(policy):
+        if policy is None:
+            return [], []
+        return _split_ilt(policy.settings)
+
+    reg_a, ilt_a = regular_and_ilt(policy_a)
+    reg_b, ilt_b = regular_and_ilt(policy_b)
+
+    norms_a = {_norm(s) for s in reg_a}
+    norms_b = {_norm(s) for s in reg_b}
+
+    state_a = (policy_a.state if policy_a else "") or "Not Configured"
+    state_b = (policy_b.state if policy_b else "") or "Not Configured"
+    states_differ = _norm(state_a) != _norm(state_b)
+
+    def field_html(label: str, body: str) -> str:
+        return (
+            f"<p style='margin:0 0 10px 0;'>"
+            f"<span style='color:{lbl}; font-size:11px; font-weight:700;"
+            f" text-transform:uppercase; letter-spacing:0.4px;'>{escape(label)}</span><br>"
+            f"{body}"
+            f"</p>"
+        )
+
+    def settings_body(settings: list[str], own_norms: set, other_norms: set, added_side: bool) -> str:
+        if not settings:
+            return f"<span style='color:{lbl}; font-style:italic;'>None available</span>"
+        lines = []
+        for s in settings:
+            n = _norm(s)
+            if n not in other_norms:
+                color = success if added_side else danger
+                lines.append(f"<span style='color:{color};'>{escape(s)}</span>")
+            else:
+                lines.append(f"<span style='color:{text};'>{escape(s)}</span>")
+        return "<br>".join(lines)
+
+    def ilt_body(rules: list[str]) -> str:
+        if not rules:
+            return f"<span style='color:{lbl}; font-style:italic;'>None</span>"
+        return "<br>".join(f"<span style='color:{text};'>{escape(r)}</span>" for r in rules)
+
+    def build_cell(policy, settings: list[str], ilt: list[str],
+                   state: str, state_differs: bool,
+                   own_norms: set, other_norms: set, is_b_side: bool) -> str:
+        if policy is None:
+            return f"<p style='color:{lbl}; font-style:italic;'>Not present in this backup.</p>"
+
+        state_color = orange if state_differs else text
+        path        = policy_path(policy)
+        name        = policy.name or ""
+
+        html = ""
+        if path:
+            html += field_html("Path", f"<span style='color:{text}; font-size:12px;'>{escape(path)}</span>")
+        if name:
+            html += field_html("Settings", f"<span style='color:{text}; font-size:12px;'>{escape(name)}</span>")
+        html += field_html(
+            "State",
+            f"<span style='color:{state_color}; font-size:12px; font-weight:700;'>{escape(state)}</span>",
+        )
+        html += field_html(
+            "Additional setting information",
+            settings_body(settings, own_norms, other_norms, is_b_side),
+        )
+        if ilt or (item.policy_a and item.policy_b):
+            html += field_html("Targeting information", ilt_body(ilt))
+
+        return html
+
+    cell_a = build_cell(policy_a, reg_a, ilt_a, state_a, states_differ,
+                        norms_a, norms_b, is_b_side=False)
+    cell_b = build_cell(policy_b, reg_b, ilt_b, state_b, states_differ,
+                        norms_b, norms_a, is_b_side=True)
+
+    return (
+        f"<table width='100%' cellspacing='0' cellpadding='0'"
+        f" style='border-collapse:collapse; border:1px solid {border}; margin-bottom:20px;'>"
+        # header row
+        f"<tr>"
+        f"<td width='50%' style='padding:8px 14px; background:{bg};"
+        f" border-right:1px solid {border}; border-bottom:2px solid {lbl};'>"
+        f"<b style='color:{lbl}; font-size:13px;'>Backup A</b></td>"
+        f"<td width='50%' style='padding:8px 14px; background:{bg};"
+        f" border-bottom:2px solid {orange};'>"
+        f"<b style='color:{orange}; font-size:13px;'>Backup B</b></td>"
+        f"</tr>"
+        # content row
+        f"<tr>"
+        f"<td width='50%' style='padding:14px; vertical-align:top;"
+        f" border-right:1px solid {border};'>{cell_a}</td>"
+        f"<td width='50%' style='padding:14px; vertical-align:top;'>{cell_b}</td>"
+        f"</tr>"
+        f"</table>"
+    )
 
 
 def _backup_card_html(title: str, color: str, policy, missing_text: str, item: PolicyDiff, t: dict, side: str) -> str:
@@ -1570,25 +1653,29 @@ def _definition_html(policy, t: dict) -> str:
     explain = (policy.explain or "").strip()
     if explain and not explain.startswith("Se") and not explain.startswith("MACHINE\\"):
         rows.append(
-            f"<div style='margin:6px 0;'>"
+            f"<tr><td colspan='2' style='padding:6px 0; border-bottom:1px solid {t['border']};'>"
             f"<span style='color:{t['label']}; font-size:11px; font-weight:700;"
-            f" text-transform:uppercase; letter-spacing:0.4px;'>Explanation</span>"
-            f"<p style='margin:4px 0 0 0; color:{t['text']}; font-size:12px;"
-            f" line-height:1.6;'>{_multiline_html(explain)}</p>"
-            f"</div>"
+            f" text-transform:uppercase; letter-spacing:0.4px;'>Explanation</span><br>"
+            f"<span style='color:{t['text']}; font-size:12px; line-height:1.6;'>"
+            f"{_multiline_html(explain)}</span>"
+            f"</td></tr>"
         )
 
-    return f"<div style='display:grid; gap:4px;'>{''.join(rows)}</div>"
+    return (
+        f"<table cellspacing='0' cellpadding='0'"
+        f" style='width:100%; border-collapse:collapse;'>{''.join(rows)}</table>"
+    )
 
 
 def _def_row(label: str, value: str, t: dict) -> str:
     return (
-        f"<div style='display:flex; gap:12px; align-items:baseline; padding:3px 0;"
-        f" border-bottom:1px solid {t['border']};'>"
-        f"<span style='color:{t['label']}; font-size:11px; font-weight:700;"
-        f" text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap; min-width:90px;'>{escape(label)}</span>"
-        f"<span style='color:{t['text']}; font-size:12px;'>{escape(value)}</span>"
-        "</div>"
+        f"<tr style='border-bottom:1px solid {t['border']};'>"
+        f"<td style='color:{t['label']}; font-size:11px; font-weight:700;"
+        f" text-transform:uppercase; letter-spacing:0.4px; white-space:nowrap;"
+        f" width:95px; padding:4px 10px 4px 0; vertical-align:top;'>{escape(label)}</td>"
+        f"<td style='color:{t['text']}; font-size:12px; padding:4px 0;"
+        f" vertical-align:top;'>{escape(value)}</td>"
+        f"</tr>"
     )
 
 
@@ -1596,7 +1683,7 @@ def _status_color(status: str, t: dict) -> str:
     return {
         "Added":     t["status_added"],
         "Removed":   t["status_removed"],
-        "Changed":   t["status_changed"],
+        "Different": t["status_changed"],
         "Unchanged": t["status_unchanged"],
     }.get(status, t["status_unchanged"])
 

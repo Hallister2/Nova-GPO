@@ -73,7 +73,7 @@ def build_policy_diff(
 
         status = "Unchanged"
         if policy_signature(policy_a) != policy_signature(policy_b):
-            status = "Changed"
+            status = "Different"
 
         items.append(PolicyDiff(
             status=status,
@@ -101,7 +101,7 @@ def build_backup_diff(
 
 
 def summarize_diffs(items: list[PolicyDiff]) -> CompareSummary:
-    status_counts = {"Added": 0, "Changed": 0, "Removed": 0, "Unchanged": 0}
+    status_counts = {"Added": 0, "Different": 0, "Removed": 0, "Unchanged": 0}
     same_state = 0
     different_state = 0
 
@@ -114,7 +114,7 @@ def summarize_diffs(items: list[PolicyDiff]) -> CompareSummary:
 
     return CompareSummary(
         added=status_counts["Added"],
-        changed=status_counts["Changed"],
+        changed=status_counts["Different"],
         removed=status_counts["Removed"],
         unchanged=status_counts["Unchanged"],
         same_state=same_state,
@@ -321,17 +321,11 @@ def settings_text(settings: list[str]) -> str:
 
 def _policy_map(policies: list[GpoReportPolicy]) -> dict[str, GpoReportPolicy]:
     mapped: dict[str, GpoReportPolicy] = {}
-    counts: dict[str, int] = {}
 
     for policy in policies:
         key = _policy_key(policy)
-        count = counts.get(key, 0)
-        counts[key] = count + 1
-
-        if count:
-            key = f"{key}::duplicate-{count + 1}"
-
-        mapped[key] = policy
+        if key not in mapped:
+            mapped[key] = policy
 
     return mapped
 
@@ -346,6 +340,8 @@ def _artifact_policy_diffs(
     results: list[PolicyDiff] = []
 
     for diff_item in diff_items:
+        if diff_item.key.startswith("comment::"):
+            continue
         policy_a = _setting_as_policy(setting_a.get(diff_item.key), backup_a.name, diff_item.old_value)
         policy_b = _setting_as_policy(setting_b.get(diff_item.key), backup_b.name, diff_item.new_value)
         primary = policy_b or policy_a
@@ -400,14 +396,15 @@ def _attach_artifact_evidence(items: list[PolicyDiff]) -> list[PolicyDiff]:
 
 
 def _is_raw_artifact(item: PolicyDiff) -> bool:
-    policy = item.policy_b or item.policy_a
-    return bool(policy and policy.policy_type == "Artifact")
+    # All items produced by _artifact_policy_diffs() carry an "artifact::" key prefix,
+    # regardless of whether their policy_type is "Artifact" or "Preference".
+    return item.key.startswith("artifact::")
 
 
 def _evidence_status_compatible(artifact_status: str, candidate_status: str) -> bool:
     if artifact_status == candidate_status:
         return True
-    return candidate_status == "Changed" and artifact_status in {"Added", "Removed"}
+    return candidate_status == "Different" and artifact_status in {"Added", "Removed"}
 
 
 def _artifact_matches_policy(artifact: PolicyDiff, candidate: PolicyDiff) -> bool:
@@ -476,13 +473,13 @@ def _diff_status_text(status: DiffStatus) -> str:
     return {
         DiffStatus.ADDED: "Added",
         DiffStatus.REMOVED: "Removed",
-        DiffStatus.CHANGED: "Changed",
+        DiffStatus.CHANGED: "Different",
         DiffStatus.UNCHANGED: "Unchanged",
     }[status]
 
 
 def _status_sort(status: str) -> int:
-    return {"Added": 0, "Changed": 1, "Removed": 2, "Unchanged": 3}.get(status, 4)
+    return {"Added": 0, "Different": 1, "Removed": 2, "Unchanged": 3}.get(status, 4)
 
 
 def _policy_key(policy: GpoReportPolicy) -> str:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core.settings import REPORTS_DIR
 from app.library_store import load_compare_record_payload, update_compare_record_reviews
 from app.ui.branding import app_icon
 from app.ui.widgets import badge
@@ -35,6 +37,14 @@ _REVIEW_STATUSES = [
     "Under Investigation",
     "Escalated",
 ]
+
+_REVIEW_STATUS_COLOR: dict[str, str] = {
+    "Pending Review":      "#C8901A",  # amber  — unreviewed, needs attention
+    "Update Required":     "#C84040",  # red    — action required
+    "Escalated":           "#B040C8",  # purple — urgent
+    "Under Investigation": "#4090C8",  # blue   — being worked
+    "No Action Required":  "#707070",  # gray   — resolved / done
+}
 
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
 
@@ -206,6 +216,7 @@ class ArchivedCompareWindow(QDialog):
 
         self.review_status = QComboBox()
         self.review_status.addItems(_REVIEW_STATUSES)
+        self.review_status.currentTextChanged.connect(self._refresh_current_item)
         self.review_priority = QComboBox()
         self.review_priority.addItems(_REVIEW_PRIORITIES)
         self.owner_box = QLineEdit()
@@ -249,9 +260,12 @@ class ArchivedCompareWindow(QDialog):
     def _populate_list(self, findings: list[dict[str, Any]]) -> None:
         self.list_widget.clear()
         for finding in findings:
-            item = QListWidgetItem(_finding_label(finding))
+            key = str(finding.get("key", ""))
+            rs = (self.reviews.get(key) or {}).get("status") or "Pending Review"
+            item = QListWidgetItem(_finding_label(finding, rs))
             item.setData(Qt.ItemDataRole.UserRole, finding)
             item.setToolTip(str(finding.get("name") or finding.get("key") or ""))
+            _apply_review_style(item, rs)
             self.list_widget.addItem(item)
 
     def _on_search(self, text: str) -> None:
@@ -336,6 +350,17 @@ class ArchivedCompareWindow(QDialog):
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
+    def _refresh_current_item(self) -> None:
+        if self.loading:
+            return
+        item = self.list_widget.currentItem()
+        if item is None:
+            return
+        finding = item.data(Qt.ItemDataRole.UserRole)
+        rs = self.review_status.currentText()
+        item.setText(_finding_label(finding, rs))
+        _apply_review_style(item, rs)
+
     def _save_all(self) -> None:
         self._save_current()
         update_compare_record_reviews(self.record_path, self.reviews)
@@ -345,10 +370,11 @@ class ArchivedCompareWindow(QDialog):
 
     def _export_html(self) -> None:
         safe_title = (self.payload.get("title") or "report").replace(" ", "_").replace("/", "-")[:60]
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Comparison Report",
-            f"{safe_title}.html",
+            str(REPORTS_DIR / f"{safe_title}.html"),
             "HTML Files (*.html);;All Files (*)",
         )
         if not path:
@@ -384,13 +410,19 @@ def _record_findings(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _finding_label(finding: dict[str, Any]) -> str:
+def _finding_label(finding: dict[str, Any], review_status: str = "") -> str:
     status = str(finding.get("status") or "Unknown")
     name = str(finding.get("name") or finding.get("key") or "Unknown")
     scope = str(finding.get("scope") or "")
     scope_short = scope.split(" ")[-1] if scope else ""   # "Configuration" → last word only
     header = f"{status}  ·  {scope_short}" if scope_short else status
-    return f"{header}\n{name}"
+    rs = review_status or "Pending Review"
+    return f"{header}\n{name}\n{rs}"
+
+
+def _apply_review_style(item: QListWidgetItem, review_status: str) -> None:
+    color_hex = _REVIEW_STATUS_COLOR.get(review_status, _REVIEW_STATUS_COLOR["Pending Review"])
+    item.setForeground(QColor(color_hex))
 
 
 def _finding_meta(finding: dict[str, Any]) -> str:
@@ -405,6 +437,65 @@ def _finding_meta(finding: dict[str, Any]) -> str:
     return scope
 
 
+def _reconciliation_steps(finding: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return (label, description) pairs describing what each backup needs to align."""
+    status = str(finding.get("status") or "")
+    state_a = str(finding.get("state_a") or "").strip()
+    state_b = str(finding.get("state_b") or "").strip()
+    changes: list[str] = [str(c) for c in (finding.get("changes") or []) if c]
+
+    steps: list[tuple[str, str]] = []
+
+    if status == "Added":
+        state_note = f" — set state to \"{state_b}\"" if state_b and state_b != "Not present" else ""
+        steps.append(("Add to Backup A", f"This policy is only in Backup B{state_note}."))
+        for c in changes:
+            if c.startswith("Added configured value:"):
+                steps.append(("Configure in A", c.split(":", 1)[1].strip()))
+
+    elif status in ("Removed", "Missing in B"):
+        state_note = f" — set state to \"{state_a}\"" if state_a and state_a != "Not present" else ""
+        steps.append(("Add to Backup B", f"This policy is only in Backup A{state_note}."))
+        for c in changes:
+            if c.startswith("Added configured value:"):
+                steps.append(("Configure in B", c.split(":", 1)[1].strip()))
+
+    elif status == "Missing in A":
+        state_note = f" — set state to \"{state_b}\"" if state_b and state_b != "Not present" else ""
+        steps.append(("Add to Backup A", f"This policy is only in Backup B{state_note}."))
+
+    elif status == "Different":
+        if state_a and state_b and state_a.lower() != state_b.lower():
+            steps.append(("State differs", f"Backup A: \"{state_a}\"  →  Backup B: \"{state_b}\""))
+
+        for c in changes:
+            cl = c.lower()
+            if cl.startswith("state changed"):
+                continue  # already handled above
+            elif cl.startswith("no setting-level differences"):
+                steps.append(("Note", "Difference may be metadata, formatting, or an unsupported parser detail."))
+            elif c.startswith("Added configured value in Backup B:"):
+                val = c.split("Added configured value in Backup B:", 1)[1].strip()
+                steps.append(("Backup A is missing", val))
+            elif c.startswith("Removed configured value from Backup B:"):
+                val = c.split("Removed configured value from Backup B:", 1)[1].strip()
+                steps.append(("Backup B is missing", val))
+            elif c.startswith("Added configured value:"):
+                steps.append(("Backup A is missing", c.split(":", 1)[1].strip()))
+            elif c.startswith("Removed configured value:"):
+                steps.append(("Backup B is missing", c.split(":", 1)[1].strip()))
+            elif "supported-on text changed" in cl:
+                steps.append(("Policy Definition", "Review and align the Supported On attribute."))
+            elif cl.startswith("type changed from"):
+                steps.append(("Policy Type", c))
+            elif cl.startswith("category changed from"):
+                steps.append(("Category", c))
+            else:
+                steps.append(("Review", c))
+
+    return steps
+
+
 def _finding_detail_html(finding: dict[str, Any]) -> str:
     # Dark theme palette (matches executive_dark)
     C_BG     = "#101112"
@@ -416,8 +507,44 @@ def _finding_detail_html(finding: dict[str, Any]) -> str:
     C_ORANGE = "#FF8A1F"
     C_GREEN  = "#3DDC84"
     C_RED    = "#FF4D4D"
+    C_BLUE   = "#82B6FF"
 
     parts = [f"<div style='font-size:13px; line-height:1.65; color:{C_TEXT};'>"]
+
+    # ── To Align These Policies ───────────────────────────────────────────────
+    steps = _reconciliation_steps(finding)
+    if steps:
+        parts.append(
+            f"<p style='color:{C_BLUE}; font-weight:800; font-size:12px; margin:0 0 6px 0;"
+            f" text-transform:uppercase; letter-spacing:0.5px; padding:6px 10px;"
+            f" background:{C_RAISED}; border-left:3px solid {C_BLUE};'>"
+            f"To Align These Policies</p>"
+        )
+        parts.append(
+            f"<table cellspacing='0' cellpadding='0'"
+            f" style='width:100%; border-collapse:collapse; margin-bottom:18px;'>"
+        )
+        for i, (label, desc) in enumerate(steps):
+            row_bg = "#191b1d" if i % 2 == 0 else "transparent"
+            cl = label.lower()
+            if "missing" in cl or "add to" in cl or "configure" in cl:
+                label_color = C_ORANGE
+            elif "differs" in cl or "review" in cl or "note" in cl:
+                label_color = C_MUTED
+            else:
+                label_color = C_BLUE
+            parts.append(
+                f"<tr style='background:{row_bg};'>"
+                f"<td style='color:{label_color}; font-size:11px; font-weight:700;"
+                f" text-transform:uppercase; letter-spacing:0.3px; width:155px;"
+                f" white-space:nowrap; padding:7px 10px 7px 12px; vertical-align:top;"
+                f" border-bottom:1px solid {C_BORDER};'>{_esc(label)}</td>"
+                f"<td style='color:{C_TEXT}; font-size:12px; line-height:1.6;"
+                f" padding:7px 12px 7px 4px; vertical-align:top;"
+                f" border-bottom:1px solid {C_BORDER};'>{_esc(desc)}</td>"
+                f"</tr>"
+            )
+        parts.append("</table>")
 
     # ── Actual Delta ──────────────────────────────────────────────────────────
     parts.append(
@@ -502,18 +629,22 @@ def _finding_detail_html(finding: dict[str, Any]) -> str:
             f" text-transform:uppercase; letter-spacing:0.5px; padding:5px 10px;"
             f" background:{C_RAISED}; border-left:3px solid {C_LABEL};'>Policy Definition</p>"
         )
-        parts.append(f"<div style='display:grid; gap:2px; margin-bottom:12px;'>")
+        parts.append(
+            f"<table cellspacing='0' cellpadding='0'"
+            f" style='width:100%; border-collapse:collapse; margin-bottom:12px;'>"
+        )
         for lbl, val in def_rows:
             parts.append(
-                f"<div style='display:flex; gap:10px; padding:4px 0;"
-                f" border-bottom:1px solid {C_BORDER};'>"
-                f"<span style='color:{C_MUTED}; font-size:11px; font-weight:700;"
-                f" text-transform:uppercase; letter-spacing:0.4px; min-width:90px;"
-                f" white-space:nowrap;'>{_esc(lbl)}</span>"
-                f"<span style='color:{C_TEXT}; font-size:12px;'>{_esc(val)}</span>"
-                f"</div>"
+                f"<tr>"
+                f"<td style='color:{C_MUTED}; font-size:11px; font-weight:700;"
+                f" text-transform:uppercase; letter-spacing:0.4px; width:95px;"
+                f" white-space:nowrap; padding:5px 10px 5px 0; vertical-align:top;"
+                f" border-bottom:1px solid {C_BORDER};'>{_esc(lbl)}</td>"
+                f"<td style='color:{C_TEXT}; font-size:12px; padding:5px 0;"
+                f" vertical-align:top; border-bottom:1px solid {C_BORDER};'>{_esc(val)}</td>"
+                f"</tr>"
             )
-        parts.append("</div>")
+        parts.append("</table>")
     elif not category:
         parts.append(
             f"<p style='color:{C_MUTED}; font-size:11px; font-style:italic; margin-top:12px;'>"
@@ -574,7 +705,7 @@ def _replace_badge(slot: QHBoxLayout, replacement: QLabel) -> None:
 
 def _status_badge_state(finding: dict[str, Any]) -> str:
     return {
-        "Changed":    "changed",
+        "Different":  "changed",
         "Added":      "added",
         "Missing in A": "added",
         "Removed":    "removed",

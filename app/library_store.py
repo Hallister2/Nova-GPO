@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +15,16 @@ from app.gpo.comparison_model import PolicyDiff, setting_changes
 from app.reports.compare_report import actionable_items
 
 
-LIBRARY_DIR = USER_DATA_DIR / "library"
-COMPARE_ARCHIVE_DIR = LIBRARY_DIR / "compares"
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, clearing read-only flags on Windows if needed."""
+    def _on_error(func, p, _exc_info):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=_on_error)
+
+
+LIBRARY_DIR = USER_DATA_DIR / "Library"
+COMPARE_ARCHIVE_DIR = LIBRARY_DIR / "Compares"
 COMPARE_RECORD_NAME = "compare.json"
 COMPARE_HTML_NAME = "report.html"
 COMPARE_MARKDOWN_NAME = "report.md"
@@ -182,7 +192,7 @@ def delete_compare_record(record_path: str) -> None:
     if expected_root not in resolved_target.parents and resolved_target != expected_root:
         raise ValueError(f"Refusing to delete outside compare library: {record_path}")
 
-    shutil.rmtree(target)
+    _rmtree(target)
 
 
 def _summary(diff_items: list[PolicyDiff], review_notes: dict[str, dict[str, str]]) -> dict[str, int]:
@@ -190,7 +200,7 @@ def _summary(diff_items: list[PolicyDiff], review_notes: dict[str, dict[str, str
     return {
         "total_items": len(diff_items),
         "actionable": len(findings),
-        "changed": sum(1 for item in diff_items if item.status == "Changed"),
+        "changed": sum(1 for item in diff_items if item.status == "Different"),
         "added": sum(1 for item in diff_items if item.status == "Added"),
         "removed": sum(1 for item in diff_items if item.status == "Removed"),
         "reviewed": sum(
