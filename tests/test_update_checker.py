@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from urllib.error import URLError
 from unittest.mock import patch
 
 from app.core.update_checker import (
     UpdateCheckError,
     _clean_version,
     _fetch_highest_release,
+    _format_url_error,
     _release_version,
     _is_newer_version,
     check_for_updates,
@@ -49,9 +51,9 @@ class UpdateCheckerTests(unittest.TestCase):
 
     def test_check_for_updates_reports_prerelease_update(self) -> None:
         release = {
-            "tag_name": "0.5",
-            "name": "Nova GPO 0.5",
-            "html_url": "https://github.com/Hallister2/Nova-GPO/releases/tag/0.5",
+            "tag_name": "0.8",
+            "name": "Nova GPO 0.8",
+            "html_url": "https://github.com/Hallister2/Nova-GPO/releases/tag/0.8",
             "draft": False,
             "prerelease": True,
         }
@@ -62,7 +64,7 @@ class UpdateCheckerTests(unittest.TestCase):
         self.assertTrue(result.release_found)
         self.assertTrue(result.is_update_available)
         self.assertTrue(result.is_prerelease)
-        self.assertEqual(result.latest_version, "0.5")
+        self.assertEqual(result.latest_version, "0.8")
 
     def test_release_version_uses_release_name_when_tag_is_wrong(self) -> None:
         release = {
@@ -71,6 +73,19 @@ class UpdateCheckerTests(unittest.TestCase):
         }
 
         self.assertEqual(_release_version(release), "0.5-beta")
+
+    def test_certificate_verify_failure_gets_friendly_message(self) -> None:
+        error = URLError(
+            OSError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                "Missing Authority Key Identifier (_ssl.c:1081)"
+            )
+        )
+
+        message = _format_url_error(error)
+
+        self.assertIn("Could not verify GitHub's SSL certificate", message)
+        self.assertNotIn("_ssl.c", message)
 
 
 if __name__ == "__main__":

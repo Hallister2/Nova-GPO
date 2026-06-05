@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import ssl
+import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -112,7 +114,7 @@ def _fetch_github_json(url: str, timeout: int) -> Any:
     )
 
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with urlopen(request, timeout=timeout, context=_github_ssl_context()) as response:
             data = response.read().decode("utf-8")
     except HTTPError as error:
         if error.code == 404:
@@ -121,7 +123,9 @@ def _fetch_github_json(url: str, timeout: int) -> Any:
             raise update_error from error
         raise UpdateCheckError(f"GitHub returned HTTP {error.code}.") from error
     except URLError as error:
-        raise UpdateCheckError(f"Could not reach GitHub: {error.reason}") from error
+        raise UpdateCheckError(_format_url_error(error)) from error
+    except ssl.SSLCertVerificationError as error:
+        raise UpdateCheckError(_certificate_error_message()) from error
     except TimeoutError as error:
         raise UpdateCheckError("The update check timed out.") from error
 
@@ -131,6 +135,43 @@ def _fetch_github_json(url: str, timeout: int) -> Any:
         raise UpdateCheckError("GitHub returned an unreadable release response.") from error
 
     return payload
+
+
+def _github_ssl_context() -> ssl.SSLContext:
+    if sys.platform == "win32":
+        try:
+            import truststore
+
+            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except Exception:
+            pass
+
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _format_url_error(error: URLError) -> str:
+    reason = getattr(error, "reason", error)
+    if _is_certificate_error(reason):
+        return _certificate_error_message()
+    return f"Could not reach GitHub: {reason}"
+
+
+def _is_certificate_error(error: object) -> bool:
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return True
+    return "CERTIFICATE_VERIFY_FAILED" in str(error)
+
+
+def _certificate_error_message() -> str:
+    return (
+        "Could not verify GitHub's SSL certificate. "
+        "Check Windows certificates or any HTTPS-inspection security tool, then try again."
+    )
 
 
 def _clean_version(value: str) -> str:

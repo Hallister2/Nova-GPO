@@ -94,7 +94,7 @@ class _ScanWorker(QObject):
 class _UpdateCheckWorker(QObject):
     finished = Signal(bool, object, str, bool)
 
-    def __init__(self, manual: bool, timeout: int = 5) -> None:
+    def __init__(self, manual: bool, timeout: int) -> None:
         super().__init__()
         self.manual = manual
         self.timeout = timeout
@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
         app_settings = self.settings.setdefault("app", {})
         if not bool(app_settings.get("check_for_updates_on_startup", True)):
             return
-        QTimer.singleShot(1500, lambda: self._check_for_updates(manual=False))
+        QTimer.singleShot(5000, lambda: self._check_for_updates(manual=False))
 
     def _check_updates_on_startup(self) -> bool:
         app_settings = self.settings.setdefault("app", {})
@@ -534,7 +534,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Checking GitHub releases for updates...")
 
         self._update_check_thread = QThread(self)
-        self._update_check_worker = _UpdateCheckWorker(manual=manual)
+        self._update_check_worker = _UpdateCheckWorker(
+            manual=manual,
+            timeout=8 if manual else 2,
+        )
         self._update_check_worker.moveToThread(self._update_check_thread)
         self._update_check_thread.started.connect(self._update_check_worker.run)
         self._update_check_worker.finished.connect(self._on_update_check_finished)

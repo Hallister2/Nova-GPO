@@ -19,6 +19,13 @@ try:
 except ImportError:
     pass
 
+# On Windows, truststore lets urllib validate HTTPS with the OS trust store,
+# including enterprise roots managed outside Python's CA bundle.
+try:
+    hiddenimports += collect_submodules('truststore')
+except Exception:
+    pass
+
 # Fall back to Python's built-in ssl CA bundle
 _ssl_cafile = ssl.get_default_verify_paths().cafile
 if _ssl_cafile and os.path.exists(_ssl_cafile):
