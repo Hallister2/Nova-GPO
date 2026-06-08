@@ -8,6 +8,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+from app import __version__
 from app.gpo.comparison_model import PolicyDiff, setting_changes
 from app.reports.insights import diagnostics_dict, parser_diagnostics, risk_counts, risk_tag
 
@@ -37,6 +38,8 @@ def csv_report(
         writer.writerow(["Total compared", summary["total"]])
         writer.writerow(["Actionable findings", summary["actionable"]])
         writer.writerow(["Ignored", summary["ignored"]])
+        writer.writerow(["Reviewed", summary["reviewed"]])
+        writer.writerow(["Pending review", summary["unreviewed"]])
         writer.writerow(["Different", summary["changed"]])
         writer.writerow(["Missing in A", summary["missing_in_a"]])
         writer.writerow(["Missing in B", summary["missing_in_b"]])
@@ -69,6 +72,8 @@ def executive_summary(
         f"Nova GPO compared {summary['total']} total items.",
         f"{summary['actionable']} actionable finding(s) need review.",
         f"{summary['ignored']} finding(s) were marked no action required.",
+        f"{summary['reviewed']} actionable finding(s) have review status updates.",
+        f"{summary['unreviewed']} actionable finding(s) are still pending review.",
         f"{summary['changed']} policies changed between the selected backups.",
         f"{summary['missing_in_a']} policies are missing in Backup A.",
         f"{summary['missing_in_b']} policies are missing in Backup B.",
@@ -92,6 +97,8 @@ def markdown_report(
     report.append("# Nova GPO Comparison Report")
     report.append("")
     report.append(f"Generated: {now}")
+    report.append(f"App Version: {__version__}")
+    report.append(f"Profile: {profile}")
     report.append("")
     report.append(f"Backup A: {title_a}")
     report.append(f"Backup B: {title_b}")
@@ -177,6 +184,8 @@ def html_report(
             ("Total compared", summary["total"]),
             ("Actionable findings", summary["actionable"]),
             ("Ignored", summary["ignored"]),
+            ("Reviewed", summary["reviewed"]),
+            ("Pending review", summary["unreviewed"]),
             ("Different", summary["changed"]),
             ("Missing in A", summary["missing_in_a"]),
             ("Missing in B", summary["missing_in_b"]),
@@ -255,6 +264,8 @@ def html_report(
   <h1>Nova GPO Comparison Report</h1>
   <div class="meta">
     <div class="meta-item"><span>Generated</span>{escape(now)}</div>
+    <div class="meta-item"><span>Nova GPO</span>{escape(__version__)}</div>
+    <div class="meta-item"><span>Profile</span>{escape(profile)}</div>
     <div class="meta-item"><span>Backup A</span>{escape(title_a)}</div>
     <div class="meta-item"><span>Backup B</span>{escape(title_b)}</div>
   </div>
@@ -272,7 +283,7 @@ def html_report(
   {policy_heading}
   {policy_sections}
 
-  <div class="footer">Nova GPO &mdash; Hallister Labs &mdash; {escape(now)}</div>
+  <div class="footer">Nova GPO {escape(__version__)} &mdash; Hallister Labs &mdash; Generated {escape(now)}</div>
 </body>
 </html>
 """
@@ -454,12 +465,15 @@ def json_report(
 
     payload = {
         "generated": now,
+        "app_version": __version__,
         "backup_a": title_a,
         "backup_b": title_b,
         "summary": {
             "total": summary["total"],
             "actionable": summary["actionable"],
             "ignored": summary["ignored"],
+            "reviewed": summary["reviewed"],
+            "unreviewed": summary["unreviewed"],
             "changed": summary["changed"],
             "missing_in_a": summary["missing_in_a"],
             "missing_in_b": summary["missing_in_b"],
@@ -536,10 +550,17 @@ def _summary_counts(
         1 for item in actionable_items(diff_items)
         if notes.get(item.key, {}).get("status", "Pending Review") in NON_ACTIONABLE_REVIEW_STATUSES
     )
+    reviewed = sum(
+        1 for item in actionable_items(diff_items)
+        if notes.get(item.key, {}).get("status", "Pending Review") != "Pending Review"
+    )
+    actionable = changed + added + removed - ignored
     return {
         "total": len(diff_items),
-        "actionable": changed + added + removed - ignored,
+        "actionable": actionable,
         "ignored": ignored,
+        "reviewed": reviewed,
+        "unreviewed": max(0, actionable - reviewed),
         "changed": changed,
         "missing_in_a": added,
         "missing_in_b": removed,

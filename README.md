@@ -1,6 +1,7 @@
 <p align="center">
 <img width="591" height="172" alt="Nova GPO - Application Logo" src="https://github.com/user-attachments/assets/cfcab1d4-aef0-4251-8300-b867e53891e9" />
 </p>
+
 # Nova GPO
 
 Nova GPO is a Hallister Labs / Nova Suite desktop application for reviewing,
@@ -33,12 +34,14 @@ preserve compare results independently from the original backup folders.
   findings and notes remain available even if the source backup folders are
   later removed.
 - **Global Search** - Search backup names, policy names, configured values, and
-  parsed artifact content across available backup sources.
+  parsed artifact content across available backup sources without blocking the
+  main window during large searches.
 - **Exports** - Export compare results as HTML, Markdown, or JSON.
 - **Update Checks** - Check GitHub releases for newer Nova GPO builds from the
-  Settings page or automatically on startup.
+  sidebar or automatically on startup. Installer downloads support SHA-256
+  release checksum verification when a checksum asset is published.
 - **Local-first Storage** - Settings, saved reports, and review data are stored
-  locally under the user's application data folder.
+  locally under the user's Documents folder.
 
 ## First Run
 
@@ -91,19 +94,43 @@ possible so reviewers can find the original source material.
 Nova GPO stores local application data in:
 
 ```text
-%APPDATA%\Hallister Labs\Nova GPO
+%USERPROFILE%\Documents\Nova GPO
 ```
 
 Useful subfolders include:
 
 ```text
-%APPDATA%\Hallister Labs\Nova GPO\library\compares
-%APPDATA%\Hallister Labs\Nova GPO\logs
+%USERPROFILE%\Documents\Nova GPO\Config
+%USERPROFILE%\Documents\Nova GPO\Library\Compares
+%USERPROFILE%\Documents\Nova GPO\Logs
 ```
 
 Saved compare reports are independent archives. Removing a live backup source
 does not automatically delete saved compare reviews.
 
+## Packaging Releases
+
+Use `PackageApplication.ps1` from the repository root to build the PyInstaller
+EXE, sync the Inno Setup version, build the installer, and generate the release
+checksum.
+
+```powershell
+.\PackageApplication.ps1 -Version 0.8
+```
+
+The script produces:
+
+```text
+dist\Nova GPO.exe
+dist\installer\NovaGPOSetup_0.8.exe
+dist\installer\NovaGPOSetup_0.8.exe.sha256
+```
+
+Upload both `NovaGPOSetup_<version>.exe` and
+`NovaGPOSetup_<version>.exe.sha256` to the GitHub release. Nova GPO uses the
+checksum asset to verify downloaded installers before launching an update.
+
+See [RELEASE.md](RELEASE.md) for the full release checklist.
 
 ## Status
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import re
 import ssl
 import subprocess
 import tempfile
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +47,7 @@ from app.ui.styles import THEME_LABELS, build_stylesheet
 from app.gpo.archive import archive_backup, restore_archived_backup
 from app.gpo.backup_catalog import BackupCatalogItem, scan_backup_library
 from app.gpo.backup_loader import load_gpo_backup
+from app.gpo.scan_cache import display_scan_time, load_scan_cache, save_scan_cache
 from app.library_store import delete_compare_record, list_compare_records, rename_compare_record
 from app.ui.pages.dashboard_page import DashboardPage
 from app.ui.pages.home_page import HomePage
@@ -71,24 +75,39 @@ _PAGE_NAMES = ["Dashboard", "Backup Library", "Search", "Reports", "Settings"]
 
 
 class _ScanWorker(QObject):
-    finished = Signal(list)
+    finished = Signal(list, float, list, bool)
     progress = Signal(str)
 
     def __init__(self, roots: list[str]) -> None:
         super().__init__()
         self.roots = roots
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
 
     def run(self) -> None:
+        started = time.perf_counter()
         items: list[BackupCatalogItem] = []
+        errors: list[str] = []
         total = len(self.roots)
         for source_index, root in enumerate(self.roots, start=1):
-            self.progress.emit(f"Scanning source {source_index} of {total}…")
+            if self._cancel_requested:
+                break
+            self.progress.emit(f"Scanning source {source_index} of {total}: {root}")
             try:
-                items.extend(scan_backup_library(root, source_index=source_index))
+                items.extend(
+                    scan_backup_library(
+                        root,
+                        source_index=source_index,
+                        should_cancel=lambda: self._cancel_requested,
+                    )
+                )
             except Exception as error:
                 _log.warning("Library scan failed for %s: %s", root, error, exc_info=True)
+                errors.append(f"Source {source_index}: {error}")
                 self.progress.emit(f"Scan skipped source {source_index}: {error}")
-        self.finished.emit(items)
+        self.finished.emit(items, time.perf_counter() - started, errors, self._cancel_requested)
 
 
 class _UpdateCheckWorker(QObject):
@@ -116,10 +135,11 @@ class _DownloadWorker(QObject):
     _CHUNK = 65_536   # 64 KB read size
     _TIMEOUT = 60     # seconds for connect + each read
 
-    def __init__(self, url: str, dest_path: str) -> None:
+    def __init__(self, url: str, dest_path: str, checksum_url: str = "") -> None:
         super().__init__()
         self.url = url
         self.dest_path = dest_path
+        self.checksum_url = checksum_url
 
     def run(self) -> None:
         try:
@@ -152,9 +172,27 @@ class _DownloadWorker(QObject):
                             self.progress.emit(min(99, downloaded * 100 // total))
 
             self.progress.emit(100)
+            if self.checksum_url:
+                checksum_text = self._download_checksum(ssl_ctx)
+                expected_hash = _extract_sha256(checksum_text, os.path.basename(self.dest_path))
+                if not expected_hash:
+                    self.finished.emit(False, "Checksum file did not contain a SHA-256 hash for this installer.")
+                    return
+                actual_hash = _sha256_file(self.dest_path)
+                if actual_hash.casefold() != expected_hash.casefold():
+                    self.finished.emit(False, "Downloaded installer checksum did not match the GitHub release checksum.")
+                    return
             self.finished.emit(True, self.dest_path)
         except Exception as exc:
             self.finished.emit(False, str(exc))
+
+    def _download_checksum(self, ssl_ctx: ssl.SSLContext) -> str:
+        req = urllib.request.Request(
+            self.checksum_url,
+            headers={"User-Agent": "Nova-GPO-Updater/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=self._TIMEOUT, context=ssl_ctx) as resp:
+            return resp.read().decode("utf-8", errors="replace")
 
 
 class MainWindow(QMainWindow):
@@ -209,7 +247,6 @@ class MainWindow(QMainWindow):
         self._fs_watcher.directoryChanged.connect(self._on_directory_changed)
 
         self._connect_signals()
-        self.settings_page.purge_on_startup()
         self._restore_state()
         self._prepare_library_startup_state()
         self._refresh_compare_records()
@@ -219,6 +256,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_state()
+        scan_worker = getattr(self, "_scan_worker", None)
+        scan_thread = getattr(self, "_scan_thread", None)
+        if scan_worker and scan_thread and scan_thread.isRunning():
+            scan_worker.cancel()
+            scan_thread.quit()
+            scan_thread.wait(1500)
+        self.search_page.cancel_current_search()
         update_thread = getattr(self, "_update_check_thread", None)
         if update_thread and update_thread.isRunning():
             update_thread.quit()
@@ -376,6 +420,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page.compare_backups_requested.connect(self._compare_backups)
         self.dashboard_page.archive_requested.connect(self._archive_backups)
         self.dashboard_page.refresh_library_requested.connect(self._refresh_library)
+        self.dashboard_page.cancel_scan_requested.connect(self._cancel_library_scan)
         self.dashboard_page.settings_page_requested.connect(lambda: self._set_page("Settings"))
         self.dashboard_page.selection_changed.connect(self._on_selection_changed)
 
@@ -424,6 +469,7 @@ class MainWindow(QMainWindow):
     def _refresh_library(self) -> None:
         if getattr(self, "_scan_thread", None) and self._scan_thread.isRunning():
             _log.debug("Scan already in progress — ignoring duplicate refresh request")
+            self.statusBar().showMessage("Library scan already in progress.")
             return
 
         roots = self._backup_roots()
@@ -438,11 +484,13 @@ class MainWindow(QMainWindow):
             self._refresh_compare_records()
             self._update_home_page(0)
             self.statusBar().showMessage("No backup sources configured — add directories in Settings.")
+            self.dashboard_page.set_scan_state(False)
             _log.info("Library refresh: no backup roots configured")
             return
 
         _log.info("Library scan started: %d root(s)", len(roots))
         self.statusBar().showMessage(f"Scanning {len(roots)} backup source(s)…")
+        self.dashboard_page.set_scan_state(True, f"Scanning {len(roots)} backup source(s)...")
 
         self._scan_thread = QThread(self)
         self._scan_worker = _ScanWorker(roots)
@@ -454,14 +502,24 @@ class MainWindow(QMainWindow):
         self._scan_worker.finished.connect(self._scan_worker.deleteLater)
         self._scan_thread.finished.connect(self._scan_thread.deleteLater)
         self._scan_thread.finished.connect(lambda: setattr(self, "_scan_thread", None))
+        self._scan_thread.finished.connect(lambda: setattr(self, "_scan_worker", None))
         self._scan_thread.start()
+
+    def _cancel_library_scan(self) -> None:
+        worker = getattr(self, "_scan_worker", None)
+        thread = getattr(self, "_scan_thread", None)
+        if not worker or not thread or not thread.isRunning():
+            return
+        worker.cancel()
+        self.statusBar().showMessage("Cancelling library scan...")
+        self.dashboard_page.set_scan_state(True, "Cancelling scan after the current source finishes...")
 
     def _prepare_library_startup_state(self) -> None:
         self.catalog_items = []
         self.dashboard_page.populate([])
         self.search_page.refresh_source_filter([])
         self.settings_page.sync_source_tables(self._backup_roots())
-        self.settings_page.refresh_recycle_bin(self._backup_roots())
+        self.settings_page.refresh_recycle_bin([])
         self.reports_page.update_stats([], 0)
         self._update_home_page(0)
 
@@ -470,16 +528,54 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No backup sources configured — add directories in Settings.")
             return
 
-        # Auto-scan on startup whenever backup sources are configured.
-        # The scan worker silently skips any root that is missing or unreadable.
-        self.statusBar().showMessage(f"Scanning {len(roots)} backup source(s)…")
-        QTimer.singleShot(250, self._refresh_library)
+        cached = load_scan_cache(roots)
+        if cached:
+            self.catalog_items = cached.items
+            selected_count = len(self.dashboard_page.get_selected_backup_paths())
+            scan_time = display_scan_time(cached.scanned_at)
+            display_time = f"{scan_time} (stale)" if cached.is_stale else scan_time
+            self.dashboard_page.populate(cached.items, scan_time=display_time)
+            self.search_page.refresh_source_filter(cached.items)
+            self.settings_page.sync_source_tables(roots)
+            self.reports_page.update_stats(cached.items, selected_count)
+            self._refresh_compare_records()
+            self._update_home_page(selected_count)
+            self._update_fs_watcher(roots)
+            if cached.is_stale:
+                self.statusBar().showMessage(
+                    f"Loaded cached library scan from {scan_time}. Source changes detected; click Scan to refresh."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Loaded cached library scan from {scan_time}. Click Scan to refresh."
+                )
 
-    def _on_scan_finished(self, items: list[BackupCatalogItem]) -> None:
+        if self.settings.get("storage", {}).get("scan_on_startup", False):
+            self.statusBar().showMessage(f"Scanning {len(roots)} backup source(s)…")
+            QTimer.singleShot(250, self._refresh_library)
+            return
+
+        if not cached:
+            self.statusBar().showMessage("Backup sources configured — open Backup Library and click Scan when ready.")
+
+    def _on_scan_finished(
+        self,
+        items: list[BackupCatalogItem],
+        elapsed_seconds: float = 0.0,
+        errors: list[str] | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        self.dashboard_page.set_scan_state(False)
+        if cancelled:
+            self.statusBar().showMessage("Library scan cancelled. Existing results were kept.")
+            _log.info("Library scan cancelled after %.2fs", elapsed_seconds)
+            return
+
         self.catalog_items = items
         selected_count = len(self.dashboard_page.get_selected_backup_paths())
 
-        self.dashboard_page.populate(items)
+        time_str = datetime.now().strftime("%I:%M %p").lstrip("0")
+        self.dashboard_page.populate(items, scan_time=time_str)
         self.search_page.refresh_source_filter(items)
         self.settings_page.sync_source_tables(self._backup_roots())
         self.settings_page.refresh_recycle_bin(self._backup_roots())
@@ -487,12 +583,16 @@ class MainWindow(QMainWindow):
         self._refresh_compare_records()
         self._update_home_page(selected_count)
         self._update_fs_watcher(self._backup_roots())
+        save_scan_cache(self._backup_roots(), items, elapsed_seconds, errors)
 
-        time_str = datetime.now().strftime("%I:%M %p").lstrip("0")
+        warning_text = f"  ·  {len(errors or [])} source warning(s)" if errors else ""
         self.statusBar().showMessage(
-            f"{len(items)} backup(s) found  ·  Last scanned {time_str}"
+            f"{len(items)} backup(s) found  ·  Last scanned {time_str}  ·  {elapsed_seconds:.1f}s{warning_text}"
         )
-        _log.info("Library scan complete: %d backup(s) found", len(items))
+        _log.info(
+            "Library scan complete: %d backup(s) found in %.2fs; errors=%d",
+            len(items), elapsed_seconds, len(errors or []),
+        )
 
     def _refresh_compare_records(self) -> None:
         self.compare_records = list_compare_records()
@@ -583,7 +683,7 @@ class MainWindow(QMainWindow):
         else:
             # No installer asset — fall back to browser
             self._toast.info_action(
-                f"{release_label} is available.",
+                f"{release_label} is available, but no Windows installer asset was found.",
                 "View Release",
                 lambda: QDesktopServices.openUrl(QUrl(result.release_url)),
             )
@@ -596,11 +696,14 @@ class MainWindow(QMainWindow):
 
         asset_name = getattr(result, "asset_name", "") or "NovaGPO-Setup.exe"
         download_url = result.download_url
+        checksum_url = getattr(result, "checksum_url", "") or ""
 
         # Validate the URL is from GitHub before proceeding
-        if not download_url.startswith("https://github.com/") and \
-           not download_url.startswith("https://objects.githubusercontent.com/"):
-            self._toast.error("Download URL is not from GitHub — update cancelled.")
+        if not _is_github_download_url(download_url):
+            self._toast.error("Update download blocked: installer URL is not a GitHub release asset.")
+            return
+        if checksum_url and not _is_github_download_url(checksum_url):
+            self._toast.error("Update download blocked: checksum URL is not a GitHub release asset.")
             return
 
         tmp_dir = tempfile.mkdtemp(prefix="novagpo_update_")
@@ -613,10 +716,13 @@ class MainWindow(QMainWindow):
         self._update_installer_path = ""  # filled in on successful finish
 
         self.statusBar().showMessage(f"Downloading Nova GPO {self._update_version}…  0%")
-        self._toast.info(f"Downloading {asset_name}…")
+        if checksum_url:
+            self._toast.info(f"Downloading {asset_name} with checksum verification…")
+        else:
+            self._toast.warning("No checksum asset found for this release. Downloading without SHA-256 verification.")
 
         self._download_thread = QThread(self)
-        self._download_worker = _DownloadWorker(download_url, dest_path)
+        self._download_worker = _DownloadWorker(download_url, dest_path, checksum_url)
         self._download_worker.moveToThread(self._download_thread)
         self._download_thread.started.connect(self._download_worker.run)
 
@@ -642,7 +748,7 @@ class MainWindow(QMainWindow):
         if not ok:
             _log.error("Update download failed: %s", path_or_error)
             self.statusBar().showMessage("Download failed.")
-            self._toast.error(f"Download failed: {path_or_error}")
+            self._toast.error(_friendly_download_error(path_or_error))
             return
 
         self.statusBar().showMessage(f"Nova GPO {version} downloaded.")
@@ -856,6 +962,10 @@ class MainWindow(QMainWindow):
         active_name = page_name if page_name in self.nav_buttons else "Dashboard"
         self.stack.setCurrentIndex(index)
 
+        if active_name == "Settings":
+            self.settings_page.sync_source_tables(self._backup_roots())
+            self.settings_page.refresh_recycle_bin(self._backup_roots())
+
         for name, button in self.nav_buttons.items():
             button.setProperty("active", "true" if name == active_name else "false")
             button.style().unpolish(button)
@@ -875,3 +985,40 @@ class MainWindow(QMainWindow):
         storage["backup_roots"] = clean_roots
         storage["backup_root"] = clean_roots[0] if clean_roots else ""
         return clean_roots
+
+
+def _is_github_download_url(url: str) -> bool:
+    return url.startswith("https://github.com/") or url.startswith("https://objects.githubusercontent.com/")
+
+
+def _friendly_download_error(error: str) -> str:
+    text = str(error or "").strip()
+    lower = text.lower()
+    if "checksum did not match" in lower:
+        return "Update verification failed: installer checksum did not match the GitHub release checksum."
+    if "checksum file did not contain" in lower:
+        return "Update verification failed: checksum asset was malformed or did not reference this installer."
+    return f"Download failed: {text}" if text else "Download failed."
+
+
+def _extract_sha256(text: str, installer_name: str) -> str:
+    clean_installer = installer_name.casefold()
+    hash_pattern = re.compile(r"\b[a-fA-F0-9]{64}\b")
+    matches = hash_pattern.findall(text or "")
+    if not matches:
+        return ""
+
+    for line in (text or "").splitlines():
+        if clean_installer and clean_installer in line.casefold():
+            match = hash_pattern.search(line)
+            if match:
+                return match.group(0)
+    return matches[0] if len(matches) == 1 else ""
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

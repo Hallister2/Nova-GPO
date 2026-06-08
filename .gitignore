@@ -27,4 +27,3 @@ installer/
 *.egg-info/
 NovaGPO.iss
 Claude Scratchpad
-PackageApplication.ps1

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import platform
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -21,15 +25,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import __version__
 from app.core.log import get_logger
-from app.core.settings import save_settings
+from app.core.settings import CONFIG_DIR, REPORTS_DIR, SETTINGS_PATH, USER_DATA_DIR, save_settings
 from app.gpo.archive import (
     list_archived_backups,
     permanently_delete_archived_backup,
     purge_expired_archives,
     restore_archived_backup,
 )
-from app.gpo.backup_catalog import scan_backup_library
 from app.ui.widgets import badge, badge_item, configure_enterprise_table, readonly_item
 
 _log = get_logger(__name__)
@@ -93,6 +97,7 @@ class SettingsPage(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self._build_directories_tab(), "Backup Directories")
         tabs.addTab(self._build_recycle_bin_tab(), "Recycle Bin")
+        tabs.addTab(self._build_diagnostics_tab(), "Diagnostics")
         layout.addWidget(tabs, 1)
 
     # ── public API ────────────────────────────────────────────────────────
@@ -262,6 +267,49 @@ class SettingsPage(QWidget):
         panel_layout.addLayout(actions)
 
         layout.addWidget(panel, 1)
+        return tab
+
+    def _build_diagnostics_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(12)
+
+        panel = QFrame()
+        panel.setObjectName("Panel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(16, 16, 16, 16)
+        panel_layout.setSpacing(12)
+
+        heading = QLabel("Diagnostics")
+        heading.setObjectName("PanelTitle")
+        body = QLabel(
+            "Nova GPO writes startup, scan, update, and parser timing details to the application log."
+        )
+        body.setObjectName("Muted")
+        body.setWordWrap(True)
+
+        log_path = QLabel(str(USER_DATA_DIR / "Logs" / "nova-gpo.log"))
+        log_path.setObjectName("Muted")
+        log_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        actions = QHBoxLayout()
+        open_log_folder = QPushButton("Open Log Folder")
+        open_log_folder.setObjectName("PrimaryButton")
+        open_log_folder.clicked.connect(self._open_log_folder)
+        copy_summary = QPushButton("Copy Diagnostics Summary")
+        copy_summary.setObjectName("GhostButton")
+        copy_summary.clicked.connect(self._copy_diagnostics_summary)
+        actions.addWidget(open_log_folder)
+        actions.addWidget(copy_summary)
+        actions.addStretch()
+
+        panel_layout.addWidget(heading)
+        panel_layout.addWidget(body)
+        panel_layout.addWidget(log_path)
+        panel_layout.addLayout(actions)
+        layout.addWidget(panel)
+        layout.addStretch()
         return tab
 
     # ── directory management ──────────────────────────────────────────────
@@ -445,6 +493,43 @@ class SettingsPage(QWidget):
         storage["archive_retention_days"] = max(0, int(value))
         save_settings(self.settings)
 
+    def _open_log_folder(self) -> None:
+        log_dir = USER_DATA_DIR / "Logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
+
+    def _copy_diagnostics_summary(self) -> None:
+        QApplication.clipboard().setText(self._diagnostics_summary())
+        QMessageBox.information(self, "Diagnostics Copied", "Diagnostics summary copied to the clipboard.")
+
+    def _diagnostics_summary(self) -> str:
+        roots = self._get_roots()
+        storage = self.settings.setdefault("storage", {})
+        app_settings = self.settings.setdefault("app", {})
+        parser_settings = self.settings.setdefault("parser", {})
+        lines = [
+            "Nova GPO Diagnostics",
+            f"Version: {__version__}",
+            f"Python: {platform.python_version()}",
+            f"Platform: {platform.platform()}",
+            f"Frozen EXE: {bool(getattr(sys, 'frozen', False))}",
+            f"User data: {USER_DATA_DIR}",
+            f"Config dir: {CONFIG_DIR}",
+            f"Settings file: {SETTINGS_PATH}",
+            f"Reports dir: {REPORTS_DIR}",
+            f"Log file: {USER_DATA_DIR / 'Logs' / 'nova-gpo.log'}",
+            f"Backup source count: {len(roots)}",
+            f"Scan on startup: {bool(storage.get('scan_on_startup', False))}",
+            f"Check updates on startup: {bool(app_settings.get('check_for_updates_on_startup', True))}",
+            f"Resolve SIDs: {bool(parser_settings.get('resolve_sids', False))}",
+            "Backup sources:",
+        ]
+        if roots:
+            lines.extend(f"- {root}" for root in roots)
+        else:
+            lines.append("- none configured")
+        return "\n".join(lines)
+
     def purge_on_startup(self) -> None:
         # Runs silently at startup without emitting library_refresh_needed.
         try:
@@ -456,24 +541,9 @@ class SettingsPage(QWidget):
 # ── module-level helpers ──────────────────────────────────────────────────────
 
 def _source_status(root: str) -> tuple[str, str]:
-    from pathlib import Path
-    path = Path(root)
-
-    if not path.exists() or not path.is_dir():
+    if not str(root).strip():
         return ("Missing", "removed")
-
-    try:
-        items = scan_backup_library(str(path))
-    except OSError:
-        return ("Needs review", "review")
-
-    if not items:
-        return ("No backups", "unknown")
-
-    if any(not item.is_valid for item in items):
-        return ("Needs review", "review")
-
-    return ("Found", "valid")
+    return ("Configured", "unknown")
 
 
 def _display_time(value: str) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from app.core.log import get_logger
 
@@ -24,7 +25,11 @@ class BackupCatalogItem:
     item_count: int = 0
 
 
-def scan_backup_library(root_path: str, source_index: int = 1) -> list[BackupCatalogItem]:
+def scan_backup_library(
+    root_path: str,
+    source_index: int = 1,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[BackupCatalogItem]:
     root = Path(root_path)
 
     if not root.exists() or not root.is_dir():
@@ -34,6 +39,8 @@ def scan_backup_library(root_path: str, source_index: int = 1) -> list[BackupCat
     items: list[BackupCatalogItem] = []
 
     for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if should_cancel and should_cancel():
+            break
         if not child.is_dir():
             continue
         if child.name.lower() == ".archived":
@@ -41,7 +48,9 @@ def scan_backup_library(root_path: str, source_index: int = 1) -> list[BackupCat
 
         metadata = read_backup_metadata(child)
         display_name = metadata.get("display_name") or child.name
-        has_registry_pol, item_count = _folder_file_inventory(child)
+        has_registry_pol, item_count = _folder_file_inventory(child, should_cancel)
+        if should_cancel and should_cancel():
+            break
         is_valid, status, detail = _validate_backup_folder(child, has_registry_pol)
 
         items.append(
@@ -135,11 +144,16 @@ def _validate_backup_folder(folder: Path, has_registry_pol: bool) -> tuple[bool,
     return True, "Valid", "Backup metadata found. No Registry.pol detected."
 
 
-def _folder_file_inventory(folder: Path) -> tuple[bool, int]:
+def _folder_file_inventory(
+    folder: Path,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[bool, int]:
     has_registry_pol = False
     item_count = 0
 
     for path in folder.rglob("*"):
+        if should_cancel and should_cancel():
+            break
         if not path.is_file():
             continue
 

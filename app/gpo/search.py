@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from app.core.log import get_logger
 from app.gpo.backup_catalog import scan_backup_library
@@ -35,6 +36,8 @@ def search_backup_library(
     field_filter: str = "All Fields",
     security_only: bool = False,
     exact: bool = False,
+    progress_callback: Callable[[str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[SearchResult]:
     terms = [term for term in query.lower().split() if term]
     if not terms:
@@ -43,11 +46,26 @@ def search_backup_library(
     results: list[SearchResult] = []
 
     for source_index, root in enumerate(roots, start=1):
+        if should_cancel and should_cancel():
+            break
         if source_filter is not None and source_filter != source_index:
             continue
+        if progress_callback:
+            progress_callback(f"Searching source {source_index} of {len(roots)}...")
 
-        for catalog_item in scan_backup_library(root, source_index=source_index):
-            candidates = _search_backup(catalog_item, terms, limit - len(results), field_filter, exact)
+        for catalog_item in scan_backup_library(root, source_index=source_index, should_cancel=should_cancel):
+            if should_cancel and should_cancel():
+                break
+            if progress_callback:
+                progress_callback(f"Searching {catalog_item.display_name}...")
+            candidates = _search_backup(
+                catalog_item,
+                terms,
+                limit - len(results),
+                field_filter,
+                exact,
+                should_cancel=should_cancel,
+            )
             results.extend([
                 result for result in candidates
                 if _filter_result(result, type_filter, scope_filter, category_filter, security_only)
@@ -66,8 +84,11 @@ def _search_backup(
     remaining: int,
     field_filter: str = "All Fields",
     exact: bool = False,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[SearchResult]:
     if remaining <= 0:
+        return []
+    if should_cancel and should_cancel():
         return []
 
     results: list[SearchResult] = []
@@ -96,6 +117,8 @@ def _search_backup(
     report = load_gpreport(catalog_item.path)
     if report:
         for policy in report.policies:
+            if should_cancel and should_cancel():
+                return results
             if len(results) >= remaining:
                 return results
 
@@ -122,6 +145,8 @@ def _search_backup(
             )
 
     for setting in backup.settings:
+        if should_cancel and should_cancel():
+            return results
         if len(results) >= remaining:
             return results
 

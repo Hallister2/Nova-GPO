@@ -8,6 +8,7 @@ from app.core.update_checker import (
     UpdateCheckError,
     _clean_version,
     _fetch_highest_release,
+    _find_checksum_asset,
     _format_url_error,
     _release_version,
     _is_newer_version,
@@ -65,6 +66,40 @@ class UpdateCheckerTests(unittest.TestCase):
         self.assertTrue(result.is_update_available)
         self.assertTrue(result.is_prerelease)
         self.assertEqual(result.latest_version, "0.8")
+
+    def test_checksum_asset_matches_installer_sidecar(self) -> None:
+        release = {
+            "assets": [
+                {
+                    "name": "NovaGPOSetup_0.8.exe.sha256",
+                    "browser_download_url": "https://github.com/Hallister2/Nova-GPO/releases/download/0.8/NovaGPOSetup_0.8.exe.sha256",
+                },
+                {
+                    "name": "notes.txt",
+                    "browser_download_url": "https://github.com/Hallister2/Nova-GPO/releases/download/0.8/notes.txt",
+                },
+            ]
+        }
+
+        url, name = _find_checksum_asset(release, "NovaGPOSetup_0.8.exe")
+
+        self.assertTrue(url.endswith(".sha256"))
+        self.assertEqual(name, "NovaGPOSetup_0.8.exe.sha256")
+
+    def test_checksum_asset_accepts_sha256sums_file(self) -> None:
+        release = {
+            "assets": [
+                {
+                    "name": "SHA256SUMS.txt",
+                    "browser_download_url": "https://github.com/Hallister2/Nova-GPO/releases/download/0.8/SHA256SUMS.txt",
+                }
+            ]
+        }
+
+        url, name = _find_checksum_asset(release, "NovaGPOSetup_0.8.exe")
+
+        self.assertTrue(url.endswith("SHA256SUMS.txt"))
+        self.assertEqual(name, "SHA256SUMS.txt")
 
     def test_release_version_uses_release_name_when_tag_is_wrong(self) -> None:
         release = {

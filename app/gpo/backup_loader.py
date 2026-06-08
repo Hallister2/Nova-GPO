@@ -14,6 +14,7 @@ and Registry.pol files without changing every call site.
 """
 
 import xml.etree.ElementTree as ET
+import time
 from pathlib import Path
 
 from app.core.log import get_logger
@@ -40,13 +41,16 @@ def configure(resolve_sids: bool = False) -> None:
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def load_gpo_backup(folder_path: str) -> GpoBackup:
+    started = time.perf_counter()
     root = Path(folder_path)
 
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"GPO backup folder was not found: {folder_path}")
 
     # Single directory walk — split files by type for dispatch
+    inventory_started = time.perf_counter()
     all_files = [p for p in root.rglob("*") if p.is_file()]
+    inventory_seconds = time.perf_counter() - inventory_started
 
     xml_files:      list[Path] = []
     pref_xml_files: list[Path] = []
@@ -95,16 +99,17 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
         elif suffix in _SCRIPT_EXT:
             script_files.append(path)
 
+    timings: dict[str, float] = {"inventory": inventory_seconds}
     settings: list[GpoSetting] = []
-    settings.extend(_load_backup_metadata(root))
-    settings.extend(_load_comment_files(comment_files, root))
-    settings.extend(_load_preference_xml(pref_xml_files, root))
-    settings.extend(_load_xml(xml_files, root))
-    settings.extend(_load_applocker(applocker_files, root))
-    settings.extend(_load_security_templates(sec_tmpl_files, root))
-    settings.extend(_load_ini_like(ini_files, root))
-    settings.extend(_load_registry_pol(pol_files, root))
-    settings.extend(_load_scripts(script_files, root))
+    settings.extend(_timed_load("metadata", timings, lambda: _load_backup_metadata(root)))
+    settings.extend(_timed_load("comments", timings, lambda: _load_comment_files(comment_files, root)))
+    settings.extend(_timed_load("preferences", timings, lambda: _load_preference_xml(pref_xml_files, root)))
+    settings.extend(_timed_load("xml", timings, lambda: _load_xml(xml_files, root)))
+    settings.extend(_timed_load("applocker", timings, lambda: _load_applocker(applocker_files, root)))
+    settings.extend(_timed_load("security_templates", timings, lambda: _load_security_templates(sec_tmpl_files, root)))
+    settings.extend(_timed_load("ini", timings, lambda: _load_ini_like(ini_files, root)))
+    settings.extend(_timed_load("registry_pol", timings, lambda: _load_registry_pol(pol_files, root)))
+    settings.extend(_timed_load("scripts", timings, lambda: _load_scripts(script_files, root)))
 
     # Detect which parser types were present (no extra rglob needed)
     detected: list[str] = []
@@ -121,8 +126,12 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
 
     backup_name = read_display_name(root)
     _log.debug(
-        "Loaded backup '%s': %d settings, parsers: %s",
-        backup_name, len(settings), tuple(detected),
+        "Loaded backup '%s': %d settings in %.2fs, parsers=%s, timings=%s",
+        backup_name,
+        len(settings),
+        time.perf_counter() - started,
+        tuple(detected),
+        {name: round(seconds, 3) for name, seconds in timings.items() if seconds >= 0.001},
     )
     return GpoBackup(
         path=str(root),
@@ -130,6 +139,13 @@ def load_gpo_backup(folder_path: str) -> GpoBackup:
         settings=settings,
         detected_parsers=tuple(detected),
     )
+
+
+def _timed_load(label: str, timings: dict[str, float], loader) -> list[GpoSetting]:
+    started = time.perf_counter()
+    result = loader()
+    timings[label] = time.perf_counter() - started
+    return result
 
 
 # ── Sub-parsers ───────────────────────────────────────────────────────────────

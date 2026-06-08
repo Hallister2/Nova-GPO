@@ -189,6 +189,17 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Backup B", report)
         self.assertIn("CHG789", report)
 
+    def test_reports_include_version_profile_and_review_totals(self) -> None:
+        diff = _diff(name="Reviewed Policy")
+        html = html_report("A", "B", [diff], {diff.key: {"status": "Update Required"}}, profile="full")
+        markdown = markdown_report("A", "B", [diff], {diff.key: {"status": "Update Required"}}, profile="full")
+
+        self.assertIn("Nova GPO", html)
+        self.assertIn("Profile", html)
+        self.assertIn("Reviewed", html)
+        self.assertIn("App Version:", markdown)
+        self.assertIn("1 actionable finding(s) have review status updates", markdown)
+
     def test_write_report_bundle_creates_all_artifacts(self) -> None:
         with TemporaryDirectory() as tmp:
             target = Path(tmp) / "bundle.zip"

@@ -32,6 +32,8 @@ class UpdateCheckResult:
     is_prerelease: bool = False
     download_url: str = ""
     asset_name: str = ""
+    checksum_url: str = ""
+    checksum_name: str = ""
 
 
 def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
@@ -58,6 +60,7 @@ def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
     current_version = _clean_version(__version__)
     is_prerelease = bool(payload.get("prerelease", False))
     download_url, asset_name = _find_installer_asset(payload)
+    checksum_url, checksum_name = _find_checksum_asset(payload, asset_name)
 
     return UpdateCheckResult(
         current_version=current_version,
@@ -68,6 +71,8 @@ def check_for_updates(timeout: int = 5) -> UpdateCheckResult:
         is_prerelease=is_prerelease,
         download_url=download_url,
         asset_name=asset_name,
+        checksum_url=checksum_url,
+        checksum_name=checksum_name,
     )
 
 
@@ -231,6 +236,39 @@ def _find_installer_asset(release: dict[str, Any]) -> tuple[str, str]:
     ]
     best = preferred[0] if preferred else candidates[0]
     return str(best.get("browser_download_url", "")), str(best.get("name", ""))
+
+
+def _find_checksum_asset(release: dict[str, Any], asset_name: str) -> tuple[str, str]:
+    assets = release.get("assets")
+    if not isinstance(assets, list) or not asset_name:
+        return "", ""
+
+    asset_base = asset_name.lower()
+    candidates: list[dict[str, Any]] = [
+        asset for asset in assets
+        if isinstance(asset, dict)
+        and str(asset.get("browser_download_url", "")).startswith("https://")
+        and _looks_like_checksum_asset(str(asset.get("name", "")), asset_base)
+    ]
+
+    if not candidates:
+        return "", ""
+
+    specific = [
+        asset for asset in candidates
+        if str(asset.get("name", "")).lower().startswith(asset_base)
+    ]
+    best = specific[0] if specific else candidates[0]
+    return str(best.get("browser_download_url", "")), str(best.get("name", ""))
+
+
+def _looks_like_checksum_asset(name: str, installer_name: str) -> bool:
+    lower = name.lower()
+    if lower in {"sha256sums.txt", "sha256sum.txt", "checksums.txt", "checksum.txt"}:
+        return True
+    if lower.endswith((".sha256", ".sha256sum", ".sha256.txt")):
+        return True
+    return installer_name in lower and "sha256" in lower
 
 
 def _version_parts(value: str) -> list[int]:

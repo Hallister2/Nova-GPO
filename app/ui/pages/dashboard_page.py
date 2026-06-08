@@ -30,6 +30,7 @@ class DashboardPage(QWidget):
     compare_backups_requested = Signal(str, str)
     archive_requested = Signal(list)
     refresh_library_requested = Signal()
+    cancel_scan_requested = Signal()
     selection_changed = Signal(int)
     settings_page_requested = Signal()
 
@@ -38,6 +39,7 @@ class DashboardPage(QWidget):
         self.settings = settings
         self.catalog_items: list[BackupCatalogItem] = []
         self.compare_pending_path = ""
+        self._scan_in_progress = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 16, 22, 16)
@@ -68,7 +70,7 @@ class DashboardPage(QWidget):
         self.refresh_button = QPushButton("Scan")
         self.refresh_button.setObjectName("GhostButton")
         self.refresh_button.setMinimumWidth(72)
-        self.refresh_button.clicked.connect(self.refresh_library_requested.emit)
+        self.refresh_button.clicked.connect(self._on_refresh_clicked)
 
         header.addWidget(self.view_backups_btn)
         header.addWidget(self.archive_button)
@@ -108,7 +110,7 @@ class DashboardPage(QWidget):
         refresh_button = QPushButton("Scan")
         refresh_button.setObjectName("GhostButton")
         refresh_button.setMinimumWidth(72)
-        refresh_button.clicked.connect(self.refresh_library_requested.emit)
+        refresh_button.clicked.connect(self._on_refresh_clicked)
 
         stats = QVBoxLayout()
         stats.setSpacing(2)
@@ -285,10 +287,25 @@ class DashboardPage(QWidget):
         self.compare_pending_path = ""
         self._update_selection_summary()
 
+    def set_scan_state(self, scanning: bool, message: str = "") -> None:
+        self._scan_in_progress = scanning
+        label = "Cancel" if scanning else "Scan"
+        self.refresh_button.setText(label)
+        if hasattr(self, "empty_helper_scan_btn"):
+            self.empty_helper_scan_btn.setText(label)
+        if message:
+            self.summary_label.setText(message)
+
     # ── signal handlers ───────────────────────────────────────────────────────
 
     def _request_settings_page(self) -> None:
         self.settings_page_requested.emit()
+
+    def _on_refresh_clicked(self) -> None:
+        if self._scan_in_progress:
+            self.cancel_scan_requested.emit()
+        else:
+            self.refresh_library_requested.emit()
 
     def _on_view_backups_clicked(self) -> None:
         paths = self.get_selected_backup_paths()
@@ -445,7 +462,7 @@ class DashboardPage(QWidget):
         self.empty_helper_scan_btn = QPushButton("Scan")
         self.empty_helper_scan_btn.setObjectName("GhostButton")
         self.empty_helper_scan_btn.setFixedWidth(180)
-        self.empty_helper_scan_btn.clicked.connect(self.refresh_library_requested.emit)
+        self.empty_helper_scan_btn.clicked.connect(self._on_refresh_clicked)
 
         layout.addStretch()
         layout.addWidget(self.empty_helper_title)
