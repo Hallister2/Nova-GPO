@@ -90,10 +90,14 @@ class ReportsPage(QWidget):
 
         self._stat_reports_value = QLabel("0")
         self._stat_findings_value = QLabel("0")
+        self._stat_ignored_value = QLabel("0")
+        self._stat_security_value = QLabel("0")
         self._stat_reviewed_value = QLabel("0")
 
         layout.addWidget(_stat_card("Saved Reports", self._stat_reports_value))
         layout.addWidget(_stat_card("Actionable Findings", self._stat_findings_value))
+        layout.addWidget(_stat_card("Ignored", self._stat_ignored_value))
+        layout.addWidget(_stat_card("Security Impact", self._stat_security_value))
         layout.addWidget(_stat_card("Items Reviewed", self._stat_reviewed_value))
         layout.addStretch()
 
@@ -138,9 +142,13 @@ class ReportsPage(QWidget):
     def _rebuild_stats(self) -> None:
         records = self._compare_records
         total_findings = sum(r.actionable for r in records)
+        total_ignored = sum(r.ignored for r in records)
+        total_security = sum(r.risk_counts.get("Security", 0) for r in records)
         total_reviewed = sum(r.reviewed for r in records)
         self._stat_reports_value.setText(str(len(records)))
         self._stat_findings_value.setText(str(total_findings))
+        self._stat_ignored_value.setText(str(total_ignored))
+        self._stat_security_value.setText(str(total_security))
         self._stat_reviewed_value.setText(str(total_reviewed))
 
     def _rebuild_cards(self) -> None:
@@ -250,7 +258,15 @@ class ReportsPage(QWidget):
 
         stats_row.addWidget(_chip("compared", record.total_items))
         stats_row.addWidget(_chip("actionable", record.actionable))
+        if record.ignored:
+            stats_row.addWidget(_chip("ignored", record.ignored))
         stats_row.addWidget(_chip("changed", record.changed))
+        security_count = record.risk_counts.get("Security", 0)
+        protection_count = record.risk_counts.get("Protection", 0)
+        if security_count:
+            stats_row.addWidget(_chip("security impact", security_count))
+        if protection_count:
+            stats_row.addWidget(_chip("protection impact", protection_count))
         if record.added:
             stats_row.addWidget(_chip("missing in A", record.added))
         if record.removed:

@@ -41,7 +41,8 @@ def scan_backup_library(root_path: str, source_index: int = 1) -> list[BackupCat
 
         metadata = read_backup_metadata(child)
         display_name = metadata.get("display_name") or child.name
-        is_valid, status, detail = _validate_backup_folder(child)
+        has_registry_pol, item_count = _folder_file_inventory(child)
+        is_valid, status, detail = _validate_backup_folder(child, has_registry_pol)
 
         items.append(
             BackupCatalogItem(
@@ -55,7 +56,7 @@ def scan_backup_library(root_path: str, source_index: int = 1) -> list[BackupCat
                 detail=detail,
                 domain=metadata.get("domain", ""),
                 backup_time=metadata.get("backup_time", ""),
-                item_count=_count_backup_items(child),
+                item_count=item_count,
             )
         )
 
@@ -109,12 +110,10 @@ def _manifest_text(root: ET.Element, tag_name: str, namespace: dict[str, str]) -
     return ""
 
 
-def _validate_backup_folder(folder: Path) -> tuple[bool, str, str]:
+def _validate_backup_folder(folder: Path, has_registry_pol: bool) -> tuple[bool, str, str]:
     bkup_info = folder / "bkupInfo.xml"
     backup_xml = folder / "Backup.xml"
     gpreport_xml = folder / "gpreport.xml"
-
-    has_registry_pol = any(folder.rglob("Registry.pol")) or any(folder.rglob("registry.pol"))
 
     missing: list[str] = []
 
@@ -136,5 +135,16 @@ def _validate_backup_folder(folder: Path) -> tuple[bool, str, str]:
     return True, "Valid", "Backup metadata found. No Registry.pol detected."
 
 
-def _count_backup_items(folder: Path) -> int:
-    return len([path for path in folder.rglob("*") if path.is_file()])
+def _folder_file_inventory(folder: Path) -> tuple[bool, int]:
+    has_registry_pol = False
+    item_count = 0
+
+    for path in folder.rglob("*"):
+        if not path.is_file():
+            continue
+
+        item_count += 1
+        if path.name.casefold() == "registry.pol":
+            has_registry_pol = True
+
+    return has_registry_pol, item_count

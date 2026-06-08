@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from app.gpo import ilt_parser
@@ -47,7 +48,25 @@ def load_gpreport(backup_folder: str) -> GpoReportSummary | None:
     if not report_path.exists():
         return None
 
-    root = _read_xml_root(report_path)
+    try:
+        stat = report_path.stat()
+    except OSError:
+        return None
+
+    return _load_gpreport_cached(str(report_path), stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=256)
+def _load_gpreport_cached(
+    report_path: str,
+    _modified_time_ns: int,
+    _file_size: int,
+) -> GpoReportSummary | None:
+    path = Path(report_path)
+    if not path.exists():
+        return None
+
+    root = _read_xml_root(path)
 
     name = _text(root, "gp:Name")
     domain = _text(root.find("gp:Identifier", NS), "gp:Domain")

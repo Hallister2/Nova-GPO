@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.gpo.backup_loader import load_gpo_backup
 from app.gpo.comparison_model import PolicyDiff
 from app.gpo.gpreport_parser import GpoReportPolicy, load_gpreport
-from app.reports.compare_report import csv_report, html_report, markdown_report
+from app.reports.compare_report import csv_report, html_report, markdown_report, write_report_bundle
 
 
 def _policy(policy_type: str = "Administrative Template", name: str = "Example Policy") -> GpoReportPolicy:
@@ -28,7 +29,7 @@ def _policy(policy_type: str = "Administrative Template", name: str = "Example P
 def _diff(
     policy_type: str = "Administrative Template",
     name: str = "Example Policy",
-    status: str = "Changed",
+    status: str = "Different",
 ) -> PolicyDiff:
     policy = _policy(policy_type, name)
     return PolicyDiff(
@@ -153,6 +154,14 @@ class ReportProfileTests(unittest.TestCase):
         self.assertTrue(report.startswith("Metric,Value"))
         self.assertIn("Total compared,1", report)
         self.assertIn("Actionable findings,1", report)
+        self.assertIn("Ignored,0", report)
+
+    def test_reports_include_risk_and_diagnostics(self) -> None:
+        report = markdown_report("A", "B", [_diff(name="Password Policy")])
+
+        self.assertIn("## Risk Summary", report)
+        self.assertIn("Security", report)
+        self.assertIn("## Parser Diagnostics", report)
 
     def test_html_profile_changes_heading(self) -> None:
         report = html_report("A", "B", [_diff(policy_type="Artifact")], profile="raw")
@@ -180,6 +189,20 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Backup B", report)
         self.assertIn("CHG789", report)
 
+    def test_write_report_bundle_creates_all_artifacts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "bundle.zip"
+
+            write_report_bundle(str(target), "A", "B", [_diff(name="Password Policy")])
+
+            with zipfile.ZipFile(target) as bundle:
+                names = set(bundle.namelist())
+
+        self.assertIn("bundle.html", names)
+        self.assertIn("bundle.md", names)
+        self.assertIn("bundle.json", names)
+        self.assertIn("bundle-summary.csv", names)
+
     def test_standard_reports_omit_unchanged_inventory_items(self) -> None:
         report = markdown_report(
             "A",
@@ -194,6 +217,18 @@ class ReportProfileTests(unittest.TestCase):
         self.assertNotIn("Same Policy", report)
         self.assertIn("2 total items", report)
         self.assertIn("1 actionable", report)
+
+    def test_reviewed_no_action_required_counts_as_ignored(self) -> None:
+        diff = _diff(name="Reviewed Policy")
+        report = markdown_report(
+            "A",
+            "B",
+            [diff],
+            {diff.key: {"status": "No Action Required"}},
+        )
+
+        self.assertIn("0 actionable", report)
+        self.assertIn("1 finding(s) were marked no action required", report)
 
     def test_raw_profile_includes_unchanged_inventory_items(self) -> None:
         report = html_report(

@@ -34,7 +34,7 @@ from app.gpo.ilt_parser import ILT_HEADER
 from app.gpo.comparison_model import (
     PolicyDiff,
     build_backup_diff,
-    filter_diffs,
+    policy_text,
     setting_changes,
     summarize_diffs,
 )
@@ -53,13 +53,23 @@ _REVIEW_STATUSES = [
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
 from app.gpo.gpo_model import GpoBackup
 from app.gpo.gpreport_parser import load_gpreport
-from app.library_store import save_compare_record
-from app.reports.compare_report import html_report, json_report, markdown_report
+from app.library_store import NON_ACTIONABLE_REVIEW_STATUSES, save_compare_record
+from app.reports.compare_report import html_report, json_report, markdown_report, write_report_bundle
+from app.reports.insights import parser_diagnostics, risk_counts
 from app.review_store import load_review_notes, save_review_notes
 from app.ui.widgets import badge
 
 
 _PAGE_SIZE = 50
+_DEFAULT_REVIEW = {
+    "status": "Pending Review",
+    "priority": "Normal",
+    "owner": "",
+    "ticket": "",
+    "tags": "",
+    "notes": "",
+    "updated_at": "",
+}
 
 
 def _html_theme(t: dict) -> dict:
@@ -105,6 +115,10 @@ class CompareWindow(QDialog):
         self.report_a = load_gpreport(backup_a.path)
         self.report_b = load_gpreport(backup_b.path)
         self.diff_items = build_backup_diff(backup_a, backup_b, self.report_a, self.report_b)
+        self._filter_text_by_key = {
+            item.key: _filter_text(item)
+            for item in self.diff_items
+        }
         self.filtered_items: list[PolicyDiff] = []
         self.review_notes: dict[str, dict[str, str]] = load_review_notes(backup_a.path, backup_b.path)
         self.current_review_key = ""
@@ -204,6 +218,10 @@ class CompareWindow(QDialog):
         json_button.setObjectName("GhostButton")
         json_button.clicked.connect(self._export_json)
 
+        bundle_button = QPushButton("Export Bundle")
+        bundle_button.setObjectName("GhostButton")
+        bundle_button.clicked.connect(self._export_bundle)
+
         save_button = QPushButton("Save to Library")
         save_button.setObjectName("PrimaryButton")
         save_button.clicked.connect(self._save_to_library)
@@ -212,6 +230,7 @@ class CompareWindow(QDialog):
         layout.addWidget(export_button)
         layout.addWidget(html_button)
         layout.addWidget(json_button)
+        layout.addWidget(bundle_button)
         layout.addWidget(save_button)
 
         return panel
@@ -330,7 +349,14 @@ class CompareWindow(QDialog):
         self.scope_filter.addItems(["All Scopes", "Computer Configuration", "User Configuration"])
 
         self.review_filter.clear()
-        self.review_filter.addItems(["All Reviews"] + _REVIEW_STATUSES)
+        secondary_statuses = [
+            status
+            for status in _REVIEW_STATUSES
+            if status not in {"Pending Review", "No Action Required"}
+        ]
+        self.review_filter.addItems(
+            ["All Reviews", "Needs Action", "Pending Review", "No Action Required"] + secondary_statuses
+        )
 
         self.priority_filter.clear()
         self.priority_filter.addItems(["All Priorities"] + _REVIEW_PRIORITIES)
@@ -345,23 +371,27 @@ class CompareWindow(QDialog):
         self._apply_filters()
 
     def _apply_filters(self) -> None:
-        filtered_items = filter_diffs(
-            self.diff_items,
-            search_text=self.search_box.text(),
-            status_text=_status_filter_value(self.status_filter.currentText()),
-            scope_text=self.scope_filter.currentText(),
-        )
+        search = self.search_box.text().strip().lower()
+        status_text = _status_filter_value(self.status_filter.currentText())
+        scope_text = self.scope_filter.currentText()
+        filtered_items = [
+            item for item in self.diff_items
+            if self._matches_filters(item, search, status_text, scope_text)
+        ]
         if self.actionable_only.isChecked():
-            filtered_items = [item for item in filtered_items if item.status != "Unchanged"]
+            filtered_items = [item for item in filtered_items if self._item_needs_action(item)]
 
-        if self.review_filter.currentText() != "All Reviews":
+        review_filter_text = self.review_filter.currentText()
+        if review_filter_text == "Needs Action":
+            filtered_items = [item for item in filtered_items if self._item_needs_action(item)]
+        elif review_filter_text != "All Reviews":
             filtered_items = [
-                item for item in filtered_items if self._review_for_item(item)["status"] == self.review_filter.currentText()
+                item for item in filtered_items if self._review_for_item_readonly(item)["status"] == review_filter_text
             ]
         if self.priority_filter.currentText() != "All Priorities":
             filtered_items = [
                 item for item in filtered_items
-                if self._review_for_item(item)["priority"] == self.priority_filter.currentText()
+                if self._review_for_item_readonly(item)["priority"] == self.priority_filter.currentText()
             ]
 
         self.filtered_items = filtered_items
@@ -389,7 +419,7 @@ class CompareWindow(QDialog):
         self._row_detail_texts = {}
         self._row_review_widgets = {}
         self._scroll_to_expanded_pending = bool(self.expanded_key)
-        total_actionable = sum(1 for i in self.diff_items if i.status != "Unchanged")
+        total_actionable = sum(1 for i in self.diff_items if self._item_needs_action(i))
         count_text = f"{len(items)} of {total_actionable} shown"
         self.result_count.setText(count_text)
         self.change_list_summary.setText(count_text)
@@ -912,6 +942,32 @@ class CompareWindow(QDialog):
 
         QMessageBox.information(self, "Export Complete", f"JSON comparison report exported to:\n{path}")
 
+    def _export_bundle(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Comparison Bundle",
+            "nova-gpo-comparison.zip",
+            "Zip Files (*.zip);;All Files (*)",
+        )
+
+        if not path:
+            return
+
+        try:
+            self._save_review_for_current_item()
+            write_report_bundle(
+                path,
+                self.title_a,
+                self.title_b,
+                self.filtered_items or self.diff_items,
+                self.review_notes,
+            )
+        except Exception as error:
+            QMessageBox.critical(self, "Export Failed", str(error))
+            return
+
+        QMessageBox.information(self, "Export Complete", f"Comparison bundle exported to:\n{path}")
+
     def _save_to_library(self) -> None:
         try:
             self._save_review_for_current_item()
@@ -937,18 +993,13 @@ class CompareWindow(QDialog):
 
     def _review_for_item(self, item: PolicyDiff) -> dict[str, str]:
         review = self.review_notes.setdefault(item.key, {})
-        defaults = {
-            "status": "Pending Review",
-            "priority": "Normal",
-            "owner": "",
-            "ticket": "",
-            "tags": "",
-            "notes": "",
-            "updated_at": "",
-        }
-        for key, value in defaults.items():
+        for key, value in _DEFAULT_REVIEW.items():
             review.setdefault(key, value)
         return review
+
+    def _review_for_item_readonly(self, item: PolicyDiff) -> dict[str, str]:
+        review = self.review_notes.get(item.key, {})
+        return {**_DEFAULT_REVIEW, **review}
 
     def _load_review_controls(self, item: PolicyDiff | None) -> None:
         self.loading_review = True
@@ -1031,8 +1082,20 @@ class CompareWindow(QDialog):
             note for note in self.review_notes.values()
             if _review_has_content(note)
         ])
-        total_actionable = len([item for item in self.diff_items if item.status != "Unchanged"])
+        total_actionable = len([item for item in self.diff_items if self._item_needs_action(item)])
         self.review_progress_label.setText(f"{reviewed} reviewed / {total_actionable} actionable")
+
+    def _matches_filters(self, item: PolicyDiff, search: str, status_text: str, scope_text: str) -> bool:
+        if status_text != "All Changes":
+            if item.status != status_text:
+                return False
+        elif item.status == "Unchanged":
+            return False
+
+        if scope_text != "All Scopes" and item.scope != scope_text:
+            return False
+
+        return not search or search in self._filter_text_by_key.get(item.key, "")
 
 
 
@@ -1107,6 +1170,12 @@ class CompareWindow(QDialog):
         win = ViewWindow(backup, self)
         win.exec()
 
+    def _item_needs_action(self, item: PolicyDiff) -> bool:
+        if item.status == "Unchanged":
+            return False
+
+        return self._review_for_item_readonly(item)["status"] not in NON_ACTIONABLE_REVIEW_STATUSES
+
     def _sync_filter_indicator(self) -> None:
         active = (
             self.search_box.text().strip() != ""
@@ -1151,11 +1220,15 @@ def _apply_review_badge(bw: QLabel, disposition: str) -> None:
 
 def _compact_summary(items: list[PolicyDiff]) -> str:
     summary = summarize_diffs(items)
+    risks = risk_counts(items)
+    diagnostics = parser_diagnostics(items)
     return (
         f"{len(items)} total items  |  "
         f"{summary.added} missing in A  |  "
         f"{summary.changed} changed  |  "
-        f"{summary.removed} missing in B"
+        f"{summary.removed} missing in B  |  "
+        f"{risks.get('Security', 0)} security impact  |  "
+        f"{diagnostics.artifact_items} artifact items"
     )
 
 
@@ -1184,6 +1257,18 @@ def _review_has_content(note: dict[str, str]) -> bool:
         or bool(note.get("tags", "").strip())
         or bool(note.get("notes", "").strip())
     )
+
+
+def _filter_text(item: PolicyDiff) -> str:
+    return "\n".join(
+        [
+            item.key,
+            item.status,
+            item.scope,
+            policy_text(item.policy_a),
+            policy_text(item.policy_b),
+        ]
+    ).lower()
 
 
 def _short_cell(value: str, limit: int = 42) -> str:

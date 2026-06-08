@@ -102,7 +102,16 @@ class SearchPage(QWidget):
         self.global_type_filter = QComboBox()
         self.global_type_filter.setMinimumWidth(130)
         self.global_type_filter.addItems(
-            ["All Types", "GPO Backup", "Administrative Template", "Preference", "Artifact"]
+            [
+                "All Types",
+                "GPO Backup",
+                "Administrative Template",
+                "Security Setting",
+                "Firewall Rule",
+                "AppLocker",
+                "Preference",
+                "Artifact",
+            ]
         )
 
         self.global_scope_filter = QComboBox()
@@ -110,6 +119,19 @@ class SearchPage(QWidget):
         self.global_scope_filter.addItems(
             ["All Scopes", "Backup", "Computer Configuration", "User Configuration", "Artifacts"]
         )
+
+        self.global_category_filter = QComboBox()
+        self.global_category_filter.setMinimumWidth(150)
+        self.global_category_filter.addItems(
+            ["All Categories", "Security", "Firewall", "Audit", "Password", "Registry", "Scripts"]
+        )
+
+        self.global_field_filter = QComboBox()
+        self.global_field_filter.setMinimumWidth(120)
+        self.global_field_filter.addItems(["All Fields", "Values Only", "Names Only", "Paths/Categories"])
+
+        self.security_only = QCheckBox("Security")
+        self.security_only.setObjectName("Muted")
 
         self.exact_search = QCheckBox("Exact phrase")
         self.exact_search.setObjectName("Muted")
@@ -133,6 +155,9 @@ class SearchPage(QWidget):
         row.addWidget(self.global_source_filter)
         row.addWidget(self.global_type_filter)
         row.addWidget(self.global_scope_filter)
+        row.addWidget(self.global_category_filter)
+        row.addWidget(self.global_field_filter)
+        row.addWidget(self.security_only)
         row.addWidget(self.exact_search)
         row.addWidget(search_button)
         row.addWidget(open_button)
@@ -173,12 +198,21 @@ class SearchPage(QWidget):
             source_filter=self._selected_source_index(),
             type_filter=self.global_type_filter.currentText(),
             scope_filter=self.global_scope_filter.currentText(),
+            category_filter=self.global_category_filter.currentText(),
+            field_filter=self.global_field_filter.currentText(),
+            security_only=self.security_only.isChecked(),
             exact=self.exact_search.isChecked(),
         )
         self._populate_results(results, query)
 
     def _clear_search(self) -> None:
         self.global_search_box.clear()
+        self.global_type_filter.setCurrentIndex(0)
+        self.global_scope_filter.setCurrentIndex(0)
+        self.global_category_filter.setCurrentIndex(0)
+        self.global_field_filter.setCurrentIndex(0)
+        self.security_only.setChecked(False)
+        self.exact_search.setChecked(False)
         self._populate_results([], "")
 
     def _populate_results(self, results: list[SearchResult], query: str) -> None:

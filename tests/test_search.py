@@ -95,6 +95,16 @@ class TestFilterResult(unittest.TestCase):
         r = _result(result_type="GPO Backup", scope="Backup")
         self.assertTrue(_filter_result(r, "GPO Backup", "Backup"))
 
+    def test_category_filter_matches_substrings(self) -> None:
+        r = _result(category="Security Setting > Account Policy")
+        self.assertTrue(_filter_result(r, "All Types", "All Scopes", "Security"))
+        self.assertFalse(_filter_result(r, "All Types", "All Scopes", "Firewall"))
+
+    def test_security_only_filter_matches_security_results(self) -> None:
+        r = _result(category="Password Policy")
+        self.assertTrue(_filter_result(r, "All Types", "All Scopes", security_only=True))
+        self.assertFalse(_filter_result(_result(category="Desktop"), "All Types", "All Scopes", security_only=True))
+
 
 class TestScopeFromSource(unittest.TestCase):
 
@@ -179,6 +189,13 @@ class TestSearchBackupLibrary(unittest.TestCase):
             self._make_minimal_backup(Path(tmp2), "GPO_B")
             results = search_backup_library([tmp1, tmp2], "GPO", source_filter=2)
             self.assertTrue(all(r.source_index == 2 for r in results))
+
+    def test_security_only_search_filters_non_security_backups(self) -> None:
+        from app.gpo.search import search_backup_library
+        with TemporaryDirectory() as tmp:
+            self._make_minimal_backup(Path(tmp), "NameOnlyGPO")
+            results = search_backup_library([tmp], "NameOnlyGPO", security_only=True)
+            self.assertEqual(results, [])
 
 
 if __name__ == "__main__":

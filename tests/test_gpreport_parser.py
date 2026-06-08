@@ -20,8 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKUP_ROOT = ROOT / "GPO Backups"
 
 
+def _require_sample_backups() -> None:
+    if not BACKUP_ROOT.exists():
+        raise unittest.SkipTest("Optional GPO Backups sample fixture is not present.")
+
+
 class GpoReportParserTests(unittest.TestCase):
     def test_loads_admin_template_and_preference_items(self) -> None:
+        _require_sample_backups()
         items = scan_backup_library(str(BACKUP_ROOT))
         reports = [load_gpreport(item.path) for item in items]
 
@@ -36,6 +42,7 @@ class GpoReportParserTests(unittest.TestCase):
         self.assertGreaterEqual(policy_types["Preference"], 1)
 
     def test_preference_items_participate_in_comparison(self) -> None:
+        _require_sample_backups()
         items = scan_backup_library(str(BACKUP_ROOT))
         reports = {item.display_name: load_gpreport(item.path) for item in items}
 
@@ -54,6 +61,7 @@ class GpoReportParserTests(unittest.TestCase):
         self.assertGreaterEqual(len(preference_diffs), 1)
 
     def test_markdown_report_includes_review_notes(self) -> None:
+        _require_sample_backups()
         items = scan_backup_library(str(BACKUP_ROOT))
         diff_items = build_policy_diff(
             load_gpreport(items[0].path),
@@ -105,7 +113,7 @@ class GpoReportParserTests(unittest.TestCase):
         )
 
         self.assertEqual(len(diff_items), 1)
-        self.assertEqual(diff_items[0].status, "Changed")
+        self.assertEqual(diff_items[0].status, "Different")
 
     def test_preference_registry_identity_ignores_volatile_uid(self) -> None:
         with TemporaryDirectory() as first, TemporaryDirectory() as second:
@@ -131,7 +139,7 @@ class GpoReportParserTests(unittest.TestCase):
         diff_items = build_policy_diff(report_a, report_b)
 
         self.assertEqual(len(diff_items), 1)
-        self.assertEqual(diff_items[0].status, "Changed")
+        self.assertEqual(diff_items[0].status, "Different")
 
     def test_raw_xml_value_changes_keep_same_setting_key(self) -> None:
         with TemporaryDirectory() as root:
@@ -263,7 +271,7 @@ class GpoReportParserTests(unittest.TestCase):
 
         artifact_changes = [item for item in diff_items if item.key.startswith("artifact::")]
         self.assertEqual(len(artifact_changes), 1)
-        self.assertEqual(artifact_changes[0].status, "Changed")
+        self.assertEqual(artifact_changes[0].status, "Different")
         self.assertEqual(artifact_changes[0].policy_b.policy_type, "Preference")
         self.assertEqual(artifact_changes[0].scope, "User Configuration")
 

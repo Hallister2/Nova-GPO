@@ -31,6 +31,9 @@ def search_backup_library(
     source_filter: int | None = None,
     type_filter: str = "All Types",
     scope_filter: str = "All Scopes",
+    category_filter: str = "All Categories",
+    field_filter: str = "All Fields",
+    security_only: bool = False,
     exact: bool = False,
 ) -> list[SearchResult]:
     terms = [term for term in query.lower().split() if term]
@@ -44,10 +47,10 @@ def search_backup_library(
             continue
 
         for catalog_item in scan_backup_library(root, source_index=source_index):
-            candidates = _search_backup(catalog_item, terms, limit - len(results), exact)
+            candidates = _search_backup(catalog_item, terms, limit - len(results), field_filter, exact)
             results.extend([
                 result for result in candidates
-                if _filter_result(result, type_filter, scope_filter)
+                if _filter_result(result, type_filter, scope_filter, category_filter, security_only)
             ])
             if len(results) >= limit:
                 _log.info("Search '%s': hit limit of %d results", query, limit)
@@ -57,7 +60,13 @@ def search_backup_library(
     return results
 
 
-def _search_backup(catalog_item, terms: list[str], remaining: int, exact: bool = False) -> list[SearchResult]:
+def _search_backup(
+    catalog_item,
+    terms: list[str],
+    remaining: int,
+    field_filter: str = "All Fields",
+    exact: bool = False,
+) -> list[SearchResult]:
     if remaining <= 0:
         return []
 
@@ -92,14 +101,7 @@ def _search_backup(catalog_item, terms: list[str], remaining: int, exact: bool =
 
             if not _matches(
                 terms,
-                policy.name,
-                policy.state,
-                policy.policy_type,
-                policy.category,
-                policy.scope,
-                policy.source,
-                policy.explain,
-                " ".join(policy.settings),
+                *_search_values_for_policy(policy, field_filter),
                 exact=exact,
             ):
                 continue
@@ -130,11 +132,7 @@ def _search_backup(catalog_item, terms: list[str], remaining: int, exact: bool =
 
         if not _matches(
             terms,
-            setting.key,
-            setting.category,
-            setting.name,
-            setting.value,
-            setting.source_file,
+            *_search_values_for_setting(setting, field_filter),
             exact=exact,
         ):
             continue
@@ -165,14 +163,89 @@ def _matches(terms: list[str], *values: str, exact: bool = False) -> bool:
     return all(term in haystack for term in terms)
 
 
-def _filter_result(result: SearchResult, type_filter: str, scope_filter: str) -> bool:
+def _filter_result(
+    result: SearchResult,
+    type_filter: str,
+    scope_filter: str,
+    category_filter: str = "All Categories",
+    security_only: bool = False,
+) -> bool:
     if type_filter != "All Types" and result.result_type != type_filter:
         return False
 
     if scope_filter != "All Scopes" and result.scope != scope_filter:
         return False
 
+    if category_filter != "All Categories" and category_filter.lower() not in result.category.lower():
+        return False
+
+    if security_only and not _is_security_result(result):
+        return False
+
     return True
+
+
+def _is_security_result(result: SearchResult) -> bool:
+    text = " ".join(
+        [
+            result.result_type,
+            result.scope,
+            result.name,
+            result.category,
+            result.value,
+            result.source_file,
+        ]
+    ).lower()
+    return any(
+        token in text
+        for token in (
+            "security",
+            "password",
+            "lockout",
+            "kerberos",
+            "audit",
+            "privilege",
+            "firewall",
+            "applocker",
+            "defender",
+            "administrator",
+        )
+    )
+
+
+def _search_values_for_policy(policy, field_filter: str) -> list[str]:
+    if field_filter == "Values Only":
+        return [" ".join(policy.settings), policy.state]
+    if field_filter == "Names Only":
+        return [policy.name]
+    if field_filter == "Paths/Categories":
+        return [policy.category, policy.scope, policy.source]
+    return [
+        policy.name,
+        policy.state,
+        policy.policy_type,
+        policy.category,
+        policy.scope,
+        policy.source,
+        policy.explain,
+        " ".join(policy.settings),
+    ]
+
+
+def _search_values_for_setting(setting, field_filter: str) -> list[str]:
+    if field_filter == "Values Only":
+        return [setting.value]
+    if field_filter == "Names Only":
+        return [setting.key, setting.name]
+    if field_filter == "Paths/Categories":
+        return [setting.category, setting.source_file]
+    return [
+        setting.key,
+        setting.category,
+        setting.name,
+        setting.value,
+        setting.source_file,
+    ]
 
 
 def _scope_from_source(source_file: str) -> str:

@@ -122,7 +122,7 @@ class TestCompareWindowSmoke(unittest.TestCase):
         win = self._win()
         options = [win.status_filter.itemText(i) for i in range(win.status_filter.count())]
         self.assertIn("All Changes", options)
-        self.assertIn("Changed", options)
+        self.assertIn("Different", options)
         win.close()
 
     def test_clear_filters_resets_state(self) -> None:

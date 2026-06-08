@@ -121,6 +121,7 @@ class ArchivedCompareWindow(QDialog):
         subtitle = QLabel(
             f"{summary.get('total_items', summary.get('total', 0))} compared  |  "
             f"{summary.get('actionable', len(self.findings))} actionable  |  "
+            f"{summary.get('ignored', 0)} ignored  |  "
             f"{summary.get('reviewed', 0)} reviewed"
         )
         subtitle.setObjectName("Muted")
@@ -795,7 +796,7 @@ h1{{color:#FF8A1F;}} table{{width:100%;border-collapse:collapse;}} th{{backgroun
 </style></head>
 <body>
 <h1>{title}</h1>
-<p style="color:#888;">{summary.get('total_items',0)} compared &nbsp;·&nbsp; {summary.get('actionable',0)} actionable</p>
+<p style="color:#888;">{summary.get('total_items',0)} compared &nbsp;·&nbsp; {summary.get('actionable',0)} actionable &nbsp;·&nbsp; {summary.get('ignored',0)} ignored</p>
 <table><thead><tr><th>Status</th><th>Finding</th><th>Review</th></tr></thead>
 <tbody>{rows}</tbody></table>
 </body></html>"""

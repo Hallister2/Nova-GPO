@@ -26,10 +26,12 @@ def _rmtree(path: Path) -> None:
 LIBRARY_DIR = USER_DATA_DIR / "Library"
 COMPARE_ARCHIVE_DIR = LIBRARY_DIR / "Compares"
 COMPARE_RECORD_NAME = "compare.json"
+COMPARE_INDEX_NAME = "index.json"
 COMPARE_HTML_NAME = "report.html"
 COMPARE_MARKDOWN_NAME = "report.md"
-COMPARE_SCHEMA_VERSION = 2
+COMPARE_SCHEMA_VERSION = 3
 COMPARE_APP_VERSION = "Nova GPO"
+NON_ACTIONABLE_REVIEW_STATUSES = {"No Action Required"}
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,10 @@ class CompareLibraryRecord:
     removed: int
     reviewed: int
     actionable: int
+    ignored: int
     source_status: str
+    risk_counts: dict[str, int]
+    diagnostics: dict[str, Any]
 
 
 def save_compare_record(
@@ -94,6 +99,7 @@ def save_compare_record(
             "markdown": str(markdown_path),
         },
         "summary": _summary(diff_items, review_notes),
+        "diagnostics": _diagnostics(diff_items),
         "items": findings,
         "findings": findings,
         "inventory": inventory,
@@ -102,20 +108,46 @@ def save_compare_record(
     with record_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
 
-    return _record_from_payload(payload, record_path)
+    record = _record_from_payload(payload, record_path)
+    _rebuild_compare_index()
+    return record
 
 
 def list_compare_records() -> list[CompareLibraryRecord]:
     if not COMPARE_ARCHIVE_DIR.exists():
         return []
 
+    indexed = _read_compare_index()
+    if indexed is not None:
+        return indexed
+
+    return _rebuild_compare_index()
+
+
+def _list_compare_records_from_payloads() -> list[CompareLibraryRecord]:
     records: list[CompareLibraryRecord] = []
     for record_file in COMPARE_ARCHIVE_DIR.glob(f"*/{COMPARE_RECORD_NAME}"):
         payload = _read_record_payload(record_file)
         if payload:
+            if _repair_compare_payload_summary(payload):
+                _write_record_payload(record_file, payload)
             records.append(_record_from_payload(payload, record_file))
 
     return sorted(records, key=lambda record: record.saved_at, reverse=True)
+
+
+def repair_compare_record_summaries() -> int:
+    if not COMPARE_ARCHIVE_DIR.exists():
+        return 0
+
+    repaired = 0
+    for record_file in COMPARE_ARCHIVE_DIR.glob(f"*/{COMPARE_RECORD_NAME}"):
+        payload = _read_record_payload(record_file)
+        if payload and _repair_compare_payload_summary(payload):
+            _write_record_payload(record_file, payload)
+            repaired += 1
+
+    return repaired
 
 
 def load_compare_record_payload(record_path: str) -> dict[str, Any]:
@@ -150,17 +182,11 @@ def update_compare_record_reviews(record_path: str, reviews: dict[str, dict[str,
                 item["review"] = reviews[key]
                 changed = True
 
-    summary = payload.setdefault("summary", {})
-    if isinstance(summary, dict):
-        findings = payload.get("findings") if isinstance(payload.get("findings"), list) else payload.get("items", [])
-        summary["reviewed"] = sum(
-            1 for item in findings
-            if isinstance(item, dict) and _review_has_content(item.get("review", {}))
-        )
+    changed = _repair_compare_payload_summary(payload) or changed
 
     if changed:
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
+        _write_record_payload(path, payload)
+        _rebuild_compare_index()
 
 
 def rename_compare_record(record_path: str, new_title: str) -> None:
@@ -173,8 +199,8 @@ def rename_compare_record(record_path: str, new_title: str) -> None:
         raise ValueError(f"Could not read compare record: {record_path}")
 
     payload["title"] = new_title.strip()
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+    _write_record_payload(path, payload)
+    _rebuild_compare_index()
 
 
 def delete_compare_record(record_path: str) -> None:
@@ -193,24 +219,43 @@ def delete_compare_record(record_path: str) -> None:
         raise ValueError(f"Refusing to delete outside compare library: {record_path}")
 
     _rmtree(target)
+    _rebuild_compare_index()
 
 
 def _summary(diff_items: list[PolicyDiff], review_notes: dict[str, dict[str, str]]) -> dict[str, int]:
+    from app.reports.insights import risk_counts
+
     findings = actionable_items(diff_items)
     return {
         "total_items": len(diff_items),
-        "actionable": len(findings),
-        "changed": sum(1 for item in diff_items if item.status == "Different"),
+        "actionable": sum(
+            1 for item in findings
+            if _review_status_is_actionable(review_notes.get(item.key, {}))
+        ),
+        "ignored": sum(
+            1 for item in findings
+            if _review_status_is_ignored(review_notes.get(item.key, {}))
+        ),
+        "changed": sum(1 for item in diff_items if item.status in {"Changed", "Different"}),
         "added": sum(1 for item in diff_items if item.status == "Added"),
         "removed": sum(1 for item in diff_items if item.status == "Removed"),
         "reviewed": sum(
             1 for item in findings
             if _review_has_content(review_notes.get(item.key, {}))
         ),
+        "risk_counts": risk_counts(diff_items),
     }
 
 
+def _diagnostics(diff_items: list[PolicyDiff]) -> dict[str, Any]:
+    from app.reports.insights import diagnostics_dict
+
+    return diagnostics_dict(diff_items)
+
+
 def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
+    from app.reports.insights import risk_tag
+
     policy = item.policy_b or item.policy_a
     return {
         "key": item.key,
@@ -220,6 +265,7 @@ def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
         "category": policy.category if policy else "",
         "policy_type": policy.policy_type if policy else "",
         "source": policy.source if policy else "",
+        "risk": risk_tag(item),
         "supported": policy.supported if policy else "",
         "state_a": item.state_a,
         "state_b": item.state_b,
@@ -251,6 +297,27 @@ def _review_has_content(note: dict[str, str]) -> bool:
     )
 
 
+def _review_status_is_actionable(note: dict[str, str]) -> bool:
+    return note.get("status", "Pending Review") not in NON_ACTIONABLE_REVIEW_STATUSES
+
+
+def _review_status_is_ignored(note: dict[str, str]) -> bool:
+    return note.get("status", "Pending Review") in NON_ACTIONABLE_REVIEW_STATUSES
+
+
+def _payload_item_is_actionable(item: dict[str, Any]) -> bool:
+    review = item.get("review", {})
+    if not isinstance(review, dict):
+        return True
+
+    return _review_status_is_actionable(review)
+
+
+def _payload_item_is_ignored(item: dict[str, Any]) -> bool:
+    review = item.get("review", {})
+    return isinstance(review, dict) and _review_status_is_ignored(review)
+
+
 def _read_record_payload(path: Path) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -261,10 +328,80 @@ def _read_record_payload(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _write_record_payload(path: Path, payload: dict[str, Any]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def _repair_compare_payload_summary(payload: dict[str, Any]) -> bool:
+    summary = payload.setdefault("summary", {})
+    if not isinstance(summary, dict):
+        payload["summary"] = {}
+        summary = payload["summary"]
+
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else payload.get("items", [])
+    inventory = payload.get("inventory") if isinstance(payload.get("inventory"), list) else []
+
+    if not isinstance(findings, list):
+        findings = []
+
+    if not isinstance(inventory, list):
+        inventory = []
+
+    next_summary = {
+        "total_items": len(inventory) if inventory else _int(summary.get("total_items")),
+        "actionable": sum(
+            1 for item in findings
+            if isinstance(item, dict) and _payload_item_is_actionable(item)
+        ),
+        "ignored": sum(
+            1 for item in findings
+            if isinstance(item, dict) and _payload_item_is_ignored(item)
+        ),
+        "changed": sum(
+            1 for item in inventory
+            if isinstance(item, dict) and item.get("status") in {"Changed", "Different"}
+        ),
+        "added": sum(
+            1 for item in inventory
+            if isinstance(item, dict) and item.get("status") == "Added"
+        ),
+        "removed": sum(
+            1 for item in inventory
+            if isinstance(item, dict) and item.get("status") == "Removed"
+        ),
+        "reviewed": sum(
+            1 for item in findings
+            if isinstance(item, dict) and _review_has_content(item.get("review", {}))
+        ),
+    }
+    next_risks: dict[str, int] = {}
+    for item in inventory:
+        if not isinstance(item, dict) or item.get("status") == "Unchanged":
+            continue
+        risk = str(item.get("risk") or "Policy")
+        next_risks[risk] = next_risks.get(risk, 0) + 1
+    next_summary["risk_counts"] = next_risks
+
+    changed = False
+    for key, value in next_summary.items():
+        if isinstance(value, dict):
+            if summary.get(key) != value:
+                summary[key] = value
+                changed = True
+            continue
+        if _int(summary.get(key)) != value:
+            summary[key] = value
+            changed = True
+
+    return changed
+
+
 def _record_from_payload(payload: dict[str, Any], record_path: Path) -> CompareLibraryRecord:
     backup_a = payload.get("backup_a", {}) if isinstance(payload.get("backup_a"), dict) else {}
     backup_b = payload.get("backup_b", {}) if isinstance(payload.get("backup_b"), dict) else {}
     summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+    diagnostics = payload.get("diagnostics", {}) if isinstance(payload.get("diagnostics"), dict) else {}
     backup_a_path = str(backup_a.get("path", ""))
     backup_b_path = str(backup_b.get("path", ""))
     html_path = str(payload.get("html_path") or record_path.with_name(COMPARE_HTML_NAME))
@@ -286,10 +423,11 @@ def _record_from_payload(payload: dict[str, Any], record_path: Path) -> CompareL
         added=_int(summary.get("added")),
         removed=_int(summary.get("removed")),
         reviewed=_int(summary.get("reviewed")),
-        actionable=_int(summary.get("actionable")) or (
-            _int(summary.get("changed")) + _int(summary.get("added")) + _int(summary.get("removed"))
-        ),
+        actionable=_record_actionable_count(payload, summary),
+        ignored=_record_ignored_count(payload, summary),
         source_status=_source_status(backup_a_path, backup_b_path),
+        risk_counts=_dict_of_ints(summary.get("risk_counts")),
+        diagnostics=diagnostics,
     )
 
 
@@ -313,3 +451,124 @@ def _int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _dict_of_ints(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): _int(count) for key, count in value.items()}
+
+
+def _read_compare_index() -> list[CompareLibraryRecord] | None:
+    index_path = COMPARE_ARCHIVE_DIR / COMPARE_INDEX_NAME
+    if not index_path.exists():
+        return None
+
+    try:
+        with index_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != COMPARE_SCHEMA_VERSION:
+        return None
+
+    entries = payload.get("records")
+    if not isinstance(entries, list):
+        return None
+
+    record_files = list(COMPARE_ARCHIVE_DIR.glob(f"*/{COMPARE_RECORD_NAME}"))
+    record_dirs = {path.parent.name for path in record_files}
+    index_ids = {str(entry.get("record_id", "")) for entry in entries if isinstance(entry, dict)}
+    if record_dirs != index_ids:
+        return None
+
+    mtimes = {path.parent.name: _path_mtime_ns(path) for path in record_files}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        if _int(entry.get("record_mtime_ns")) != mtimes.get(str(entry.get("record_id", ""))):
+            return None
+
+    records = [
+        _record_from_payload(entry, Path(str(entry.get("record_path", ""))))
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+    return sorted(records, key=lambda record: record.saved_at, reverse=True)
+
+
+def _rebuild_compare_index() -> list[CompareLibraryRecord]:
+    if not COMPARE_ARCHIVE_DIR.exists():
+        return []
+
+    records = _list_compare_records_from_payloads()
+    payload = {
+        "schema_version": COMPARE_SCHEMA_VERSION,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "records": [_index_payload(record) for record in records],
+    }
+    COMPARE_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    with (COMPARE_ARCHIVE_DIR / COMPARE_INDEX_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    return records
+
+
+def _index_payload(record: CompareLibraryRecord) -> dict[str, Any]:
+    return {
+        "record_id": record.record_id,
+        "schema_version": COMPARE_SCHEMA_VERSION,
+        "title": record.title,
+        "backup_a": {"title": record.backup_a_title, "path": record.backup_a_path},
+        "backup_b": {"title": record.backup_b_title, "path": record.backup_b_path},
+        "saved_at": record.saved_at,
+        "html_path": record.html_path,
+        "markdown_path": record.markdown_path,
+        "summary": {
+            "total_items": record.total_items,
+            "changed": record.changed,
+            "added": record.added,
+            "removed": record.removed,
+            "reviewed": record.reviewed,
+            "actionable": record.actionable,
+            "ignored": record.ignored,
+            "risk_counts": record.risk_counts,
+        },
+        "diagnostics": record.diagnostics,
+        "record_path": record.record_path,
+        "record_mtime_ns": _path_mtime_ns(Path(record.record_path)),
+    }
+
+
+def _path_mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _record_actionable_count(payload: dict[str, Any], summary: dict[str, Any]) -> int:
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else payload.get("items", [])
+
+    if isinstance(findings, list) and findings:
+        return sum(
+            1 for item in findings
+            if isinstance(item, dict) and _payload_item_is_actionable(item)
+        )
+
+    if "actionable" in summary:
+        return _int(summary.get("actionable"))
+
+    return _int(summary.get("changed")) + _int(summary.get("added")) + _int(summary.get("removed"))
+
+
+def _record_ignored_count(payload: dict[str, Any], summary: dict[str, Any]) -> int:
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else payload.get("items", [])
+
+    if isinstance(findings, list) and findings:
+        return sum(
+            1 for item in findings
+            if isinstance(item, dict) and _payload_item_is_ignored(item)
+        )
+
+    return _int(summary.get("ignored"))

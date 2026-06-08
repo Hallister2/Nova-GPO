@@ -90,7 +90,7 @@ class HomePage(QWidget):
                 f"Latest saved review: {latest.backup_a_title} vs {latest.backup_b_title}"
             )
             self.latest_review_detail_label.setText(
-                f"{latest.actionable} actionable finding(s) / {latest.reviewed} reviewed"
+                f"{latest.actionable} actionable / {latest.ignored} ignored / {latest.reviewed} reviewed"
             )
         else:
             self.latest_review_label.setText("No saved compare reviews yet")
