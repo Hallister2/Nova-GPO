@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-# Sentinel that separates regular preference settings from ILT rules in a
-# settings list. Consumers can split on this string to isolate the ILT section.
+# Sentinels that separate preference sections in a settings list. Consumers can
+# split on these strings to render properties, common options, and ILT cleanly.
+GPP_PROPERTIES_HEADER = "── Properties ──"
+GPP_COMMON_HEADER = "── Common Options ──"
 ILT_HEADER = "── Item-Level Targeting ──"
 
 # Windows NT version → friendly OS name used in FilterOsRange
@@ -34,6 +36,12 @@ _OS_VERSIONS: dict[str, str] = {
     "10.0": "Windows 10 / Server 2016+",
 }
 
+_NON_TARGETING_FILTER_TAGS = {
+    "FilterDataAvailable",
+    "FilterDescription",
+    "FilterName",
+}
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +51,10 @@ def _clean_tag(tag: str) -> str:
 
 def _is_neg(attrs: dict[str, str]) -> bool:
     return attrs.get("not", "0") == "1"
+
+
+def _is_targeting_filter_tag(tag: str) -> bool:
+    return tag.startswith("Filter") and tag not in _NON_TARGETING_FILTER_TAGS and tag not in {"Filters", "FilterCollection"}
 
 
 def _neg(attrs: dict[str, str]) -> str:
@@ -126,8 +138,8 @@ def _describe(tag: str, attrs: dict[str, str]) -> str:
     if tag == "FilterRegistry":
         hive  = attrs.get("hive", "").strip()
         key   = attrs.get("key", "").strip()
-        value = attrs.get("value", "").strip()
-        data  = attrs.get("data", "").strip()
+        value = attrs.get("valueName", attrs.get("value", "")).strip()
+        data  = attrs.get("valueData", attrs.get("data", "")).strip()
         path  = "\\".join(p for p in [hive, key, value] if p)
         text  = f"Registry: {path}" + (f" = {data}" if data else "")
         return f"{neg}{text}" if path else f"{neg}Registry filter"
@@ -176,6 +188,182 @@ def _describe(tag: str, attrs: dict[str, str]) -> str:
     return f"{neg}{label}: {', '.join(pairs)}" if pairs else f"{neg}{label}"
 
 
+def _registry_filter_lines(attrs: dict[str, str]) -> list[str]:
+    ordered = [
+        "bool",
+        "not",
+        "type",
+        "subtype",
+        "hive",
+        "key",
+        "valueName",
+        "valueType",
+        "valueData",
+        "min",
+        "max",
+        "gte",
+        "lte",
+    ]
+    return _structured_filter_lines("Registry Match", attrs, ordered)
+
+
+def _structured_filter_lines(title: str, attrs: dict[str, str], ordered: list[str]) -> list[str]:
+    if _is_neg(attrs):
+        title += " (NOT)"
+
+    lines = [title]
+    seen: set[str] = set()
+    for key in ordered:
+        if key in attrs:
+            lines.append(f"{_attribute_label(key)}: {_display_attr_value(key, attrs.get(key, ''))}")
+            seen.add(key)
+
+    for key, value in sorted(attrs.items()):
+        if key in seen or key == "clsid":
+            continue
+        lines.append(f"{_attribute_label(key)}: {_display_attr_value(key, value)}")
+
+    return lines
+
+
+def _generic_filter_lines(tag: str, attrs: dict[str, str]) -> list[str]:
+    title = _filter_title(tag)
+    ordered_by_tag = {
+        "FilterOs": ["bool", "not", "type", "class", "name", "version", "edition", "sp", "productType", "suite", "release", "hidden"],
+        "FilterOsRange": ["bool", "not", "lowerVersion", "upperVersion", "productType", "suite"],
+        "FilterUser": ["bool", "not", "name", "sid"],
+        "FilterGroup": ["bool", "not", "name", "sid", "userContext", "primaryGroup", "localGroup"],
+        "FilterSecurity": ["bool", "not", "name", "sid", "userContext", "primaryGroup", "localGroup"],
+        "FilterComputer": ["bool", "not", "type", "name"],
+        "FilterOrgUnit": ["bool", "not", "name", "userContext", "directMember"],
+        "FilterIpRange": ["bool", "not", "ipLow", "ipHigh", "lowerIP", "upperIP"],
+        "FilterSite": ["bool", "not", "name"],
+        "FilterMac": ["bool", "not", "mac", "vendor"],
+        "FilterMsi": ["bool", "not", "name", "productCode", "version", "language"],
+        "FilterFile": ["bool", "not", "type", "path", "file", "folder", "version", "min", "max", "gte", "lte", "date", "size", "exists", "hidden"],
+        "FilterDisk": ["bool", "not", "drive", "minSpace", "space", "freeSpace"],
+        "FilterLdap": ["bool", "not", "binding", "filter", "searchFilter", "attribute"],
+        "FilterWmi": ["bool", "not", "namespace", "query"],
+        "FilterDateTime": ["bool", "not", "start", "end", "date", "time", "timezone", "gte", "lte"],
+        "FilterPortable": ["bool", "not"],
+        "FilterProcessMode": ["bool", "not", "mode", "userContext"],
+        "FilterRunOnce": ["bool", "not", "id", "hidden"],
+        "FilterVariable": ["bool", "not", "variableName", "value"],
+    }
+    return _structured_filter_lines(title, attrs, ordered_by_tag.get(tag, ["bool", "not", "name", "value", "path", "query", "filter"]))
+
+
+def _collection_filter_lines(attrs: dict[str, str]) -> list[str]:
+    ordered = ["bool", "not", "hidden"]
+    return _structured_filter_lines("Targeting Group", attrs, ordered)
+
+
+def _filter_title(tag: str) -> str:
+    return {
+        "FilterOs": "Operating System",
+        "FilterOsRange": "Operating System Range",
+        "FilterUser": "User Match",
+        "FilterGroup": "Security Group Match",
+        "FilterSecurity": "Security Match",
+        "FilterComputer": "Computer Match",
+        "FilterOrgUnit": "Organizational Unit Match",
+        "FilterIpRange": "IP Range Match",
+        "FilterSite": "AD Site Match",
+        "FilterMac": "MAC Address Match",
+        "FilterMsi": "MSI Match",
+        "FilterFile": "File Match",
+        "FilterRegistry": "Registry Match",
+        "FilterDisk": "Disk Space Match",
+        "FilterLdap": "LDAP Match",
+        "FilterWmi": "WMI Match",
+        "FilterDateTime": "Date/Time Match",
+        "FilterPortable": "Portable Computer Match",
+        "FilterProcessMode": "Processing Mode Match",
+        "FilterRunOnce": "Run Once Match",
+        "FilterVariable": "Environment Variable Match",
+    }.get(tag, tag.replace("Filter", "").strip() or tag)
+
+
+def _attribute_label(key: str) -> str:
+    return {
+        "bool": "Join",
+        "not": "Negated",
+        "type": "Type",
+        "subtype": "Subtype",
+        "hive": "Hive",
+        "key": "Key",
+        "valueName": "Value name",
+        "valueType": "Value type",
+        "valueData": "Value data",
+        "displayDecimal": "Display decimal",
+        "min": "Minimum",
+        "max": "Maximum",
+        "gte": "Greater than or equal",
+        "lte": "Less than or equal",
+        "userContext": "User context",
+        "primaryGroup": "Primary group",
+        "localGroup": "Local group",
+        "directMember": "Direct member",
+        "productCode": "Product code",
+        "ipLow": "IP low",
+        "ipHigh": "IP high",
+        "lowerIP": "IP low",
+        "upperIP": "IP high",
+        "lowerVersion": "Lower version",
+        "upperVersion": "Upper version",
+        "minSpace": "Minimum free space",
+        "freeSpace": "Free space",
+        "searchFilter": "Search filter",
+        "variableName": "Variable name",
+        "id": "ID",
+        "sp": "Service pack",
+    }.get(key, _labelize(key))
+
+
+def _display_attr_value(key: str, value: str) -> str:
+    clean = str(value).strip()
+    if key in {"not", "userContext", "primaryGroup", "localGroup", "directMember", "gte", "lte", "hidden", "displayDecimal"}:
+        return _yes_no(clean, default=clean)
+    if key == "type":
+        return {
+            "MATCHVALUE": "Match value",
+            "KEYEXISTS": "Key exists",
+            "VALUEEXISTS": "Value exists",
+            "EXISTS": "Exists",
+            "VERSION": "Version",
+            "SIZE": "Size",
+            "DATE": "Date",
+            "NETBIOS": "NetBIOS",
+            "NE": "Not equal",
+        }.get(clean.upper(), clean)
+    if key == "subtype":
+        return {
+            "SUBSTRING": "Substring",
+            "EXACT": "Exact",
+            "VERSION": "Version",
+            "EXISTS": "Exists",
+        }.get(clean.upper(), clean)
+    return clean
+
+
+def _yes_no(value: str, default: str = "") -> str:
+    clean = str(value).strip().lower()
+    if clean in {"1", "true", "yes", "y"}:
+        return "Yes"
+    if clean in {"0", "false", "no", "n"}:
+        return "No"
+    return default or str(value).strip()
+
+
+def _labelize(value: str) -> str:
+    label = ""
+    for i, char in enumerate(value):
+        if i and char.isupper() and value[i - 1].islower():
+            label += " "
+        label += char
+    return label[:1].upper() + label[1:]
+
+
 # ── tree walker ───────────────────────────────────────────────────────────────
 
 def _walk(elem: ET.Element, out: list[str], depth: int) -> None:
@@ -188,14 +376,16 @@ def _walk(elem: ET.Element, out: list[str], depth: int) -> None:
         tag = _clean_tag(child.tag)
 
         if tag == "FilterCollection":
-            logic   = child.attrib.get("bool", "AND").upper()
-            neg_pre = "NOT " if _is_neg(child.attrib) else ""
-            out.append(f"{pad}{neg_pre}{logic}:")
+            for index, line in enumerate(_collection_filter_lines(child.attrib)):
+                prefix = "• " if index == 0 else "  "
+                out.append(f"{pad}{prefix}{line}")
             _walk(child, out, depth + 1)
 
-        elif tag not in ("Filters", "FilterCollection"):
-            desc = _describe(tag, child.attrib)
-            out.append(f"{pad}• {desc}")
+        elif _is_targeting_filter_tag(tag):
+            lines = _registry_filter_lines(child.attrib) if tag == "FilterRegistry" else _generic_filter_lines(tag, child.attrib)
+            for index, line in enumerate(lines):
+                prefix = "• " if index == 0 else "  "
+                out.append(f"{pad}{prefix}{line}")
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -221,6 +411,6 @@ def has_targeting(filters_elem: ET.Element | None) -> bool:
         return False
     for child in filters_elem.iter():
         tag = _clean_tag(child.tag)
-        if tag not in ("Filters", "FilterCollection"):
+        if _is_targeting_filter_tag(tag):
             return True
     return False

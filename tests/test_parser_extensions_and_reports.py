@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 from app.gpo.backup_loader import load_gpo_backup
 from app.gpo.comparison_model import PolicyDiff
 from app.gpo.gpreport_parser import GpoReportPolicy, load_gpreport
+from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
 from app.reports.compare_report import csv_report, html_report, markdown_report, write_report_bundle
 
 
@@ -188,6 +189,49 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Backup A", report)
         self.assertIn("Backup B", report)
         self.assertIn("CHG789", report)
+
+    def test_html_report_renders_preference_sections_as_tables_and_targeting_cards(self) -> None:
+        policy = GpoReportPolicy(
+            scope="User Configuration",
+            name="OneDrive2",
+            state="Configured",
+            category="Group Policy Preferences > Registry",
+            supported="",
+            explain="",
+            settings=[
+                GPP_PROPERTIES_HEADER,
+                "Action: Update",
+                "Registry value: HKEY_CURRENT_USER\\Software\\Run\\OneDrive2",
+                GPP_COMMON_HEADER,
+                "Stop processing on error: No",
+                "Apply once and do not reapply: No",
+                ILT_HEADER,
+                "• Registry Match",
+                "  Join: AND",
+                "  Type: Match value",
+                "  Value name: AutoAdminLogon",
+            ],
+            policy_type="Preference",
+            source="gpreport.xml::Registry",
+            identity="fixture::preference::onedrive2",
+        )
+        diff = PolicyDiff(
+            status="Different",
+            key=policy.identity,
+            scope=policy.scope,
+            state_a="Configured",
+            state_b="Configured",
+            policy_a=policy,
+            policy_b=policy,
+        )
+
+        report = html_report("A", "B", [diff])
+
+        self.assertIn("Properties", report)
+        self.assertIn("Common Options", report)
+        self.assertIn("Targeting Information", report)
+        self.assertIn("ilt-card", report)
+        self.assertIn("Value name", report)
 
     def test_reports_include_version_profile_and_review_totals(self) -> None:
         diff = _diff(name="Reviewed Policy")

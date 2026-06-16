@@ -414,25 +414,105 @@ def _preference_explain(elem: ET.Element) -> str:
 
 
 def _preference_settings(elem: ET.Element) -> list[str]:
-    settings: list[str] = []
+    property_settings: list[str] = []
 
     for key, value in sorted(elem.attrib.items()):
-        if key in {"changed", "clsid", "created", "image", "name", "status", "uid"}:
+        if key in {"changed", "clsid", "created", "disabled", "image", "name", "status", "uid"} | _common_option_keys():
             continue
 
         if value.strip():
-            settings.append(f"{key}: {value.strip()}")
+            property_settings.append(f"{_labelize(key)}: {value.strip()}")
 
     properties = _first_child(elem, "Properties")
     if properties is not None:
         for key, value in sorted(properties.attrib.items()):
+            if key in _common_option_keys():
+                continue
             if value.strip():
-                settings.append(f"{key}: {value.strip()}")
+                label = "Action" if key == "action" else _labelize(key)
+                display_value = _preference_action(value) if key == "action" else value.strip()
+                property_settings.append(f"{label}: {display_value}")
+
+    settings: list[str] = []
+    if property_settings:
+        settings.extend([ilt_parser.GPP_PROPERTIES_HEADER, *property_settings])
+
+    common_options = _preference_common_options(elem, properties.attrib if properties is not None else {})
+    if common_options:
+        settings.extend([ilt_parser.GPP_COMMON_HEADER, *common_options])
 
     filters = _first_child(elem, "Filters")
     settings.extend(ilt_parser.format_filters(filters))
 
     return _dedupe(settings)
+
+
+def _preference_common_options(elem: ET.Element, properties: dict[str, str]) -> list[str]:
+    attrs = {**properties, **elem.attrib}
+    return [
+        f"Stop processing on error: {_inverse_yes_no(_first_attr(attrs, 'bypassErrors', 'stopOnError'), default='No')}",
+        f"Run in logged-on user's context: {_yes_no(_first_attr(attrs, 'userContext', 'runInLoggedOnUserContext', 'runInLoggedOnUserSecurityContext'), default='No')}",
+        f"Remove when no longer applied: {_yes_no(_first_attr(attrs, 'removePolicy', 'removeWhenNotApplied', 'removeWhenNoLongerApplied'), default='No')}",
+        f"Apply once and do not reapply: {_yes_no(_first_attr(attrs, 'applyOnce', 'policyAppliedOnce', 'applyOnceAndDoNotReapply', 'once'), default='No')}",
+    ]
+
+
+def _common_option_keys() -> set[str]:
+    return {
+        "bypassErrors",
+        "userContext",
+        "runInLoggedOnUserContext",
+        "runInLoggedOnUserSecurityContext",
+        "removePolicy",
+        "removeWhenNotApplied",
+        "removeWhenNoLongerApplied",
+        "applyOnce",
+        "policyAppliedOnce",
+        "applyOnceAndDoNotReapply",
+        "once",
+        "stopOnError",
+    }
+
+
+def _first_attr(attrs: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = attrs.get(key, "")
+        if str(value).strip():
+            return str(value)
+    return ""
+
+
+def _preference_action(value: str) -> str:
+    return {"C": "Create", "U": "Update", "R": "Replace", "D": "Delete"}.get(
+        value.strip().upper(), value.strip()
+    )
+
+
+def _yes_no(value: str, default: str = "") -> str:
+    clean = str(value).strip().lower()
+    if clean in {"1", "true", "yes", "y"}:
+        return "Yes"
+    if clean in {"0", "false", "no", "n"}:
+        return "No"
+    return default or str(value).strip()
+
+
+def _inverse_yes_no(value: str, default: str = "") -> str:
+    clean = str(value).strip().lower()
+    if clean in {"1", "true", "yes", "y"}:
+        return "No"
+    if clean in {"0", "false", "no", "n"}:
+        return "Yes"
+    return default or str(value).strip()
+
+
+def _labelize(value: str) -> str:
+    label = ""
+    for i, char in enumerate(value):
+        if i and char.isupper() and value[i - 1].islower():
+            label += " "
+        label += char
+    return label[:1].upper() + label[1:]
 
 
 def _preference_identity(

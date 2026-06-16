@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app import __version__
 from app.gpo.comparison_model import PolicyDiff, setting_changes
+from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
 from app.reports.insights import diagnostics_dict, parser_diagnostics, risk_counts, risk_tag
 
 
@@ -247,6 +248,13 @@ def html_report(
     .side-card.b{{border-left-color:#ff8a1f}}
     .side-title{{color:#9aa0a6;font-weight:700;margin-bottom:8px}}
     .section-title{{color:#ff8a1f;margin:14px 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}}
+    .kv{{width:100%;border-collapse:collapse;background:#101112;border:1px solid rgba(255,255,255,.07);margin:4px 0 10px}}
+    .kv td{{padding:4px 7px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px;vertical-align:top}}
+    .kv tr:last-child td{{border-bottom:0}}
+    .kv-key{{width:34%;color:#9aa0a6;font-weight:700;white-space:nowrap}}
+    .kv-value{{color:#d0d4d8}}
+    .ilt-card{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:3px solid #82b6ff;border-radius:4px;padding:8px 10px;margin:6px 0 10px}}
+    .ilt-title{{color:#82b6ff;font-size:12px;font-weight:800;margin-bottom:5px}}
     ul{{padding-left:18px;margin-top:4px}}
     li{{font-size:13px;color:#d0d4d8;margin-bottom:3px}}
     .badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}}
@@ -364,18 +372,89 @@ def _side_card_html(title: str, policy, missing_text: str, side: str) -> str:
     if policy is None:
         body = f"<p>{escape(missing_text)}</p>"
     else:
-        settings = policy.settings or ["No configured value details were found."]
-        settings_html = "".join(f"<li>{escape(setting)}</li>" for setting in settings)
+        sections = _split_preference_sections(policy.settings or [])
+        properties_html = _settings_section_html("Properties", sections["properties"])
+        common_html = _settings_section_html("Common Options", sections["common"])
+        targeting_html = _targeting_section_html(sections["targeting"])
+        if not (properties_html or common_html or targeting_html):
+            properties_html = "<p>No configured value details were found.</p>"
         body = (
             f'<div class="attr"><strong>State:</strong> {escape(policy.state or "Not reported")}</div>'
             f'<div class="attr"><strong>Category:</strong> {escape(policy.category or "Not reported")}</div>'
             f'<div class="attr"><strong>Source:</strong> {escape(policy.source or "gpreport.xml")}</div>'
-            '<div class="attr" style="margin-top:8px"><strong>Configured values</strong></div>'
-            f"<ul>{settings_html}</ul>"
+            f"{properties_html}"
+            f"{common_html}"
+            f"{targeting_html}"
         )
 
     side_class = "side-card b" if side == "b" else "side-card"
     return f'<div class="{side_class}"><div class="side-title">{escape(title)}</div>{body}</div>'
+
+
+def _split_preference_sections(settings: list[str]) -> dict[str, list[str]]:
+    sections = {"properties": [], "common": [], "targeting": []}
+    current = "properties"
+    for setting in settings:
+        if setting == GPP_PROPERTIES_HEADER:
+            current = "properties"
+            continue
+        if setting == GPP_COMMON_HEADER:
+            current = "common"
+            continue
+        if setting == ILT_HEADER:
+            current = "targeting"
+            continue
+        sections[current].append(setting)
+    return sections
+
+
+def _settings_section_html(title: str, settings: list[str]) -> str:
+    if not settings:
+        return ""
+    rows = "".join(_kv_row_html(setting) for setting in settings)
+    return f'<p class="section-title">{escape(title)}</p><table class="kv">{rows}</table>'
+
+
+def _kv_row_html(setting: str) -> str:
+    if ":" not in setting:
+        return f'<tr><td colspan="2" class="kv-value"><strong>{escape(setting.strip())}</strong></td></tr>'
+    key, value = setting.split(":", 1)
+    return (
+        f'<tr><td class="kv-key">{escape(key.strip())}</td>'
+        f'<td class="kv-value">{escape(value.strip())}</td></tr>'
+    )
+
+
+def _targeting_section_html(rules: list[str]) -> str:
+    if not rules:
+        return ""
+    cards: list[str] = []
+    current_title = ""
+    current_rows: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_title, current_rows
+        if not current_title and not current_rows:
+            return
+        title = current_title or "Targeting Rule"
+        rows = "".join(_kv_row_html(row.strip()) for row in current_rows if row.strip())
+        cards.append(
+            f'<div class="ilt-card"><div class="ilt-title">{escape(title)}</div>'
+            f'<table class="kv">{rows}</table></div>'
+        )
+        current_title = ""
+        current_rows = []
+
+    for rule in rules:
+        clean = rule.strip()
+        if clean.startswith("•"):
+            flush()
+            current_title = clean.lstrip("•").strip()
+        else:
+            current_rows.append(clean)
+
+    flush()
+    return f'<p class="section-title">Targeting Information</p>{"".join(cards)}'
 
 
 def _review_html(review: dict[str, str]) -> str:

@@ -596,6 +596,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_compare_records(self) -> None:
         self.compare_records = list_compare_records()
+        self.dashboard_page.set_compare_records(self.compare_records)
         self.reports_page.populate_compare_records(self.compare_records)
         self._update_home_page(len(self.dashboard_page.get_selected_backup_paths()))
 

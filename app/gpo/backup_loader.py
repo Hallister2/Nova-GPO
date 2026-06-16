@@ -859,8 +859,9 @@ def _preference_values(element: ET.Element, pref_type: str | None = None) -> lis
     elif pref_type in {"Service", "Local User/Group"}:
         values.extend(_important_preference_attributes(attrs))
 
+    common_option_keys = _common_option_keys()
     for key, value in sorted(element.attrib.items()):
-        if key in {"changed", "clsid", "disabled", "image", "name", "status", "uid"}:
+        if key in {"changed", "clsid", "disabled", "image", "name", "status", "uid"} | common_option_keys:
             continue
         if value.strip():
             values.append(f"{key}: {value.strip()}")
@@ -868,10 +869,70 @@ def _preference_values(element: ET.Element, pref_type: str | None = None) -> lis
     if properties is not None and not values:
         values.extend(_important_preference_attributes(properties.attrib))
 
+    if values:
+        values = [ilt_parser.GPP_PROPERTIES_HEADER] + values
+
+    common_options = _preference_common_options(element, attrs)
+    if common_options:
+        values.extend([ilt_parser.GPP_COMMON_HEADER, *common_options])
+
     filters = _first_child(element, "Filters")
     values.extend(ilt_parser.format_filters(filters))
 
     return _dedupe(values)
+
+
+def _preference_common_options(element: ET.Element, properties: dict[str, str]) -> list[str]:
+    attrs = {**properties, **element.attrib}
+    return [
+        f"Stop processing on error: {_inverse_yes_no(_first_attr(attrs, 'bypassErrors', 'stopOnError'), default='No')}",
+        f"Run in logged-on user's context: {_yes_no(_first_attr(attrs, 'userContext', 'runInLoggedOnUserContext', 'runInLoggedOnUserSecurityContext'), default='No')}",
+        f"Remove when no longer applied: {_yes_no(_first_attr(attrs, 'removePolicy', 'removeWhenNotApplied', 'removeWhenNoLongerApplied'), default='No')}",
+        f"Apply once and do not reapply: {_yes_no(_first_attr(attrs, 'applyOnce', 'policyAppliedOnce', 'applyOnceAndDoNotReapply', 'once'), default='No')}",
+    ]
+
+
+def _common_option_keys() -> set[str]:
+    return {
+        "bypassErrors",
+        "userContext",
+        "runInLoggedOnUserContext",
+        "runInLoggedOnUserSecurityContext",
+        "removePolicy",
+        "removeWhenNotApplied",
+        "removeWhenNoLongerApplied",
+        "applyOnce",
+        "policyAppliedOnce",
+        "applyOnceAndDoNotReapply",
+        "once",
+        "stopOnError",
+    }
+
+
+def _first_attr(attrs: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = attrs.get(key, "")
+        if str(value).strip():
+            return str(value)
+    return ""
+
+
+def _yes_no(value: str, default: str = "") -> str:
+    clean = str(value).strip().lower()
+    if clean in {"1", "true", "yes", "y"}:
+        return "Yes"
+    if clean in {"0", "false", "no", "n"}:
+        return "No"
+    return default or str(value).strip()
+
+
+def _inverse_yes_no(value: str, default: str = "") -> str:
+    clean = str(value).strip().lower()
+    if clean in {"1", "true", "yes", "y"}:
+        return "No"
+    if clean in {"0", "false", "no", "n"}:
+        return "Yes"
+    return default or str(value).strip()
 
 
 def _preference_member_values(element: ET.Element) -> list[str]:
@@ -894,7 +955,7 @@ def _important_preference_attributes(attrs: dict[str, str]) -> list[str]:
     return [
         f"{_labelize(k)}: {v.strip()}"
         for k, v in sorted(attrs.items())
-        if k not in ignored and v.strip()
+        if k not in ignored and k not in _common_option_keys() and v.strip()
     ]
 
 

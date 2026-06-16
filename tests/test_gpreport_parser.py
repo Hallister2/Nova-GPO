@@ -181,6 +181,66 @@ class GpoReportParserTests(unittest.TestCase):
         self.assertIn("Registry value: HKEY_CURRENT_USER\\Software\\OneDrive\\DisableReport", matches[0].value)
         self.assertIn("Data: 1", matches[0].value)
 
+    def test_preference_registry_item_level_targeting_includes_full_match_details(self) -> None:
+        with TemporaryDirectory() as root:
+            folder = Path(root) / "backup"
+            pref_folder = folder / "User" / "Preferences" / "Registry"
+            pref_folder.mkdir(parents=True)
+            pref_folder.joinpath("Registry.xml").write_text(
+                """<RegistrySettings>
+  <Registry name="OneDrive2" uid="{111}" bypassErrors="1">
+    <Properties action="U" hive="HKEY_CURRENT_USER" key="Software\\Microsoft\\Windows\\CurrentVersion\\Run" name="OneDrive2" type="REG_SZ" value="&quot;C:\\Program Files\\Microsoft OneDrive\\OneDrive.exe&quot; /background" />
+    <Filters>
+      <FilterRegistry bool="AND" not="1" type="MATCHVALUE" subtype="SUBSTRING" hive="HKEY_LOCAL_MACHINE" key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" valueName="AutoAdminLogon" valueType="REG_SZ" valueData="1" min="0.0.0.0" max="0.0.0.0" gte="1" lte="0" />
+    </Filters>
+  </Registry>
+</RegistrySettings>""",
+                encoding="utf-8",
+            )
+
+            backup = load_gpo_backup(str(folder))
+
+        matches = [setting for setting in backup.settings if setting.name == "OneDrive2"]
+        self.assertEqual(len(matches), 1)
+        value = matches[0].value
+        self.assertIn("Registry Match (NOT)", value)
+        self.assertIn("Properties", value)
+        self.assertIn("Common Options", value)
+        self.assertIn("Stop processing on error: No", value)
+        self.assertIn("Run in logged-on user's context: No", value)
+        self.assertIn("Join: AND", value)
+        self.assertIn("Type: Match value", value)
+        self.assertIn("Subtype: Substring", value)
+        self.assertIn("Value name: AutoAdminLogon", value)
+        self.assertIn("Value type: REG_SZ", value)
+        self.assertIn("Value data: 1", value)
+        self.assertIn("Greater than or equal: Yes", value)
+        self.assertIn("Less than or equal: No", value)
+
+    def test_preference_common_options_accept_alternate_attribute_names(self) -> None:
+        with TemporaryDirectory() as root:
+            folder = Path(root) / "backup"
+            pref_folder = folder / "User" / "Preferences" / "Registry"
+            pref_folder.mkdir(parents=True)
+            pref_folder.joinpath("Registry.xml").write_text(
+                """<RegistrySettings>
+  <Registry name="AltOptions" uid="{111}" stopOnError="0" runInLoggedOnUserSecurityContext="1" removeWhenNoLongerApplied="1" once="1">
+    <Properties action="U" hive="HKEY_CURRENT_USER" key="Software\\Example" name="AltOptions" type="REG_SZ" value="1" />
+  </Registry>
+</RegistrySettings>""",
+                encoding="utf-8",
+            )
+
+            backup = load_gpo_backup(str(folder))
+
+        matches = [setting for setting in backup.settings if setting.name == "AltOptions"]
+        self.assertEqual(len(matches), 1)
+        value = matches[0].value
+        self.assertIn("Stop processing on error: Yes", value)
+        self.assertIn("Run in logged-on user's context: Yes", value)
+        self.assertIn("Remove when no longer applied: Yes", value)
+        self.assertIn("Apply once and do not reapply: Yes", value)
+
     def test_common_preference_xml_types_are_semantically_parsed(self) -> None:
         with TemporaryDirectory() as root:
             folder = Path(root) / "backup"

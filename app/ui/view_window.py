@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
 from app.core.settings import APP_ROOT
 from app.gpo.gpo_model import GpoBackup
 from app.gpo.gpreport_parser import GpoReportPolicy, load_gpreport
-from app.gpo.ilt_parser import ILT_HEADER
+from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
 from app.ui.branding import APP_LOGO_PATH, app_icon
 from app.ui.widgets import badge, badge_item, configure_enterprise_table, readonly_item
 
@@ -352,38 +353,20 @@ class ViewWindow(QDialog):
         fields_container = QWidget()
         fields_layout = QVBoxLayout(fields_container)
         fields_layout.setContentsMargins(0, 0, 0, 0)
-        fields_layout.setSpacing(10)
+        fields_layout.setSpacing(8)
 
-        type_value = QLabel()
-        category_value = QLabel()
-        scope_value = QLabel(scope)
-        supported_value = QLabel()
-        source_value = QLabel()
+        detail_text = QTextEdit()
+        detail_text.setReadOnly(True)
+        detail_text.setObjectName("DetailText")
+        detail_text.setFrameShape(QFrame.Shape.NoFrame)
+        detail_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        configured_values = QLabel()
-        configured_values.setWordWrap(True)
-        configured_values.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        copy_details_btn = QPushButton("Copy Details")
+        copy_details_btn.setObjectName("GhostButton")
+        copy_details_btn.clicked.connect(lambda: QApplication.clipboard().setText(detail_text.toPlainText()))
 
-        ilt_values = QLabel()
-        ilt_values.setWordWrap(True)
-        ilt_values.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        ilt_section = _detail_section("Item-Level Targeting", ilt_values)
-        ilt_section.setVisible(False)
-
-        explanation_value = QTextEdit()
-        explanation_value.setReadOnly(True)
-        explanation_value.setFrameShape(QFrame.Shape.NoFrame)
-        explanation_value.setMaximumHeight(160)
-        explanation_value.setObjectName("Muted")
-
-        fields_layout.addWidget(_detail_field("Type", type_value))
-        fields_layout.addWidget(_detail_field("Category", category_value))
-        fields_layout.addWidget(_detail_field("Scope", scope_value))
-        fields_layout.addWidget(_detail_field("Supported On", supported_value))
-        fields_layout.addWidget(_detail_field("Source", source_value))
-        fields_layout.addWidget(_detail_section("Configured Setting", configured_values))
-        fields_layout.addWidget(ilt_section)
-        fields_layout.addWidget(_detail_section("Explanation", explanation_value), 1)
+        fields_layout.addWidget(detail_text, 1)
+        fields_layout.addWidget(copy_details_btn)
         fields_container.setVisible(False)
 
         detail_layout.addWidget(detail_title)
@@ -483,19 +466,7 @@ class ViewWindow(QDialog):
 
             detail_name.setText(policy.name or "Unknown policy")
             _replace_badge(detail_state_slot, badge(policy.state or "Unknown", _state_badge_state(policy.state)))
-            type_value.setText(policy.policy_type or "Unknown")
-            category_value.setText(policy.category or "Not reported")
-            scope_value.setText(policy.scope or "Not reported")
-            supported_value.setText(policy.supported or "Not specified")
-            source_value.setText(policy.source or "gpreport.xml")
-            regular, ilt_rules = _split_ilt(policy.settings)
-            configured_values.setText(_settings_text(regular))
-            if ilt_rules:
-                ilt_values.setText("\n".join(ilt_rules))
-                ilt_section.setVisible(True)
-            else:
-                ilt_section.setVisible(False)
-            explanation_value.setPlainText(policy.explain or "No explanation text was included in the report.")
+            detail_text.setHtml(_policy_detail_html(policy))
             empty_hint.setVisible(False)
             fields_container.setVisible(True)
 
@@ -924,6 +895,110 @@ def _settings_text(settings: list[str]) -> str:
     if not settings:
         return "No configured value details were found for this policy."
     return "\n".join(f"• {s}" for s in settings)
+
+
+def _split_policy_sections(settings: list[str]) -> dict[str, list[str]]:
+    sections = {"properties": [], "common": [], "targeting": []}
+    current = "properties"
+    for setting in settings:
+        if setting == GPP_PROPERTIES_HEADER:
+            current = "properties"
+            continue
+        if setting == GPP_COMMON_HEADER:
+            current = "common"
+            continue
+        if setting == ILT_HEADER:
+            current = "targeting"
+            continue
+        sections[current].append(setting)
+    return sections
+
+
+def _policy_detail_html(policy: GpoReportPolicy) -> str:
+    sections = _split_policy_sections(policy.settings)
+    rows = [
+        ("Type", policy.policy_type or "Unknown"),
+        ("Category", policy.category or "Not reported"),
+        ("Scope", policy.scope or "Not reported"),
+        ("Supported On", policy.supported or "Not specified"),
+        ("Source", policy.source or "gpreport.xml"),
+    ]
+    html = [
+        "<div style='font-size:13px; line-height:1.45;'>",
+        _detail_html_section("General", _metadata_table_html(rows)),
+        _detail_html_section("Properties", _settings_table_html(sections["properties"])),
+    ]
+    if sections["common"]:
+        html.append(_detail_html_section("Common Options", _settings_table_html(sections["common"])))
+    if sections["targeting"]:
+        html.append(_detail_html_section("Item-Level Targeting", _settings_table_html(sections["targeting"], targeting=True)))
+    html.append(_detail_html_section("Explanation", f"<p>{escape(policy.explain or 'No explanation text was included in the report.')}</p>"))
+    html.append("</div>")
+    return "".join(html)
+
+
+def _detail_html_section(title: str, body: str) -> str:
+    return (
+        "<section style='margin:0 0 14px 0;'>"
+        f"<h3 style='font-size:13px; margin:0 0 7px 0; text-transform:uppercase; letter-spacing:0.4px;'>{escape(title)}</h3>"
+        f"{body}"
+        "</section>"
+    )
+
+
+def _metadata_table_html(rows: list[tuple[str, str]]) -> str:
+    body = "".join(
+        "<tr>"
+        f"<td style='font-weight:700; padding:5px 10px 5px 0; width:32%; vertical-align:top;'>{escape(label)}</td>"
+        f"<td style='padding:5px 0; vertical-align:top;'>{escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return f"<table width='100%' cellspacing='0' cellpadding='0'>{body}</table>"
+
+
+def _settings_table_html(settings: list[str], targeting: bool = False) -> str:
+    if not settings:
+        return "<p style='opacity:0.72;'>No configured value details were found for this policy.</p>"
+    rows: list[str] = []
+    for setting in settings:
+        clean = setting.strip()
+        if not clean:
+            continue
+        if clean.startswith("•"):
+            rows.append(
+                "<tr>"
+                f"<td colspan='2' style='font-weight:800; padding:8px 0 4px 0;'>{escape(clean.lstrip('•').strip())}</td>"
+                "</tr>"
+            )
+            continue
+        key, value = _split_setting_pair(clean)
+        if key:
+            rows.append(
+                "<tr>"
+                f"<td style='font-weight:700; padding:4px 10px 4px 0; width:34%; vertical-align:top;'>{escape(key)}</td>"
+                f"<td style='padding:4px 0; vertical-align:top;'>{escape(value)}</td>"
+                "</tr>"
+            )
+        else:
+            padding = "3px 0 3px 14px" if targeting else "3px 0"
+            rows.append(
+                "<tr>"
+                f"<td colspan='2' style='padding:{padding}; vertical-align:top;'>{escape(clean)}</td>"
+                "</tr>"
+            )
+    return (
+        "<table width='100%' cellspacing='0' cellpadding='0' style='border-collapse:collapse;'>"
+        f"{''.join(rows)}"
+        "</table>"
+    )
+
+
+def _split_setting_pair(setting: str) -> tuple[str, str]:
+    if ":" not in setting:
+        return "", setting
+    key, value = setting.split(":", 1)
+    return key.strip(), value.strip()
 
 
 def _detail_field(label_text: str, value: QLabel) -> QFrame:

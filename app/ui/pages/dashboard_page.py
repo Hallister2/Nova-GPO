@@ -38,6 +38,7 @@ class DashboardPage(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.catalog_items: list[BackupCatalogItem] = []
+        self.compare_records: list[Any] = []
         self.compare_pending_path = ""
         self._scan_in_progress = False
 
@@ -167,6 +168,27 @@ class DashboardPage(QWidget):
         self.source_filter.addItem("All Sources")
         self.source_filter.currentTextChanged.connect(self._apply_source_filter)
 
+        self.status_filter = QComboBox()
+        self.status_filter.setMinimumWidth(128)
+        self.status_filter.addItems(["All Statuses", "Valid", "Needs review"])
+        self.status_filter.currentTextChanged.connect(self._apply_row_filter)
+
+        self.date_filter = QComboBox()
+        self.date_filter.setMinimumWidth(124)
+        self.date_filter.addItems(["Any Date", "Last 7 Days", "Last 30 Days", "Last 90 Days"])
+        self.date_filter.currentTextChanged.connect(self._apply_row_filter)
+
+        self.context_filter = QComboBox()
+        self.context_filter.setMinimumWidth(166)
+        self.context_filter.addItems([
+            "All Contexts",
+            "Duplicate Names",
+            "Has Warnings",
+            "Has Saved Report",
+            "Recently Changed",
+        ])
+        self.context_filter.currentTextChanged.connect(self._apply_row_filter)
+
         open_settings_button = QPushButton("Manage Sources")
         open_settings_button.setObjectName("GhostButton")
         open_settings_button.setMinimumWidth(120)
@@ -175,6 +197,9 @@ class DashboardPage(QWidget):
         header.addWidget(heading)
         header.addStretch()
         header.addWidget(self.source_filter)
+        header.addWidget(self.status_filter)
+        header.addWidget(self.date_filter)
+        header.addWidget(self.context_filter)
         header.addWidget(open_settings_button)
         layout.addLayout(header)
 
@@ -193,9 +218,9 @@ class DashboardPage(QWidget):
         layout.addLayout(health_row)
 
         self.backup_filter_box = QLineEdit()
-        self.backup_filter_box.setPlaceholderText("Filter backups by name…")
+        self.backup_filter_box.setPlaceholderText("Filter by GPO name, domain, path, status, or source...")
         self.backup_filter_box.setClearButtonEnabled(True)
-        self.backup_filter_box.textChanged.connect(self._apply_backup_filter)
+        self.backup_filter_box.textChanged.connect(self._apply_row_filter)
         layout.addWidget(self.backup_filter_box)
 
         layout.addWidget(self._build_backup_table(), 1)
@@ -253,6 +278,10 @@ class DashboardPage(QWidget):
 
         self._update_selection_summary()
         self._update_empty_helper()
+
+    def set_compare_records(self, records: list[Any]) -> None:
+        self.compare_records = records
+        self._apply_row_filter()
 
     def get_selected_backup_paths(self) -> list[str]:
         rows = sorted({index.row() for index in self.backup_table.selectedIndexes()})
@@ -337,11 +366,7 @@ class DashboardPage(QWidget):
         self.selection_changed.emit(count)
 
     def _apply_backup_filter(self) -> None:
-        query = self.backup_filter_box.text().strip().lower()
-        for row in range(self.backup_table.rowCount()):
-            name_item = self.backup_table.item(row, 1)
-            match = not query or (name_item and query in name_item.text().lower())
-            self.backup_table.setRowHidden(row, not match)
+        self._apply_row_filter()
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.backup_table and event.type() == QEvent.Type.KeyPress:
@@ -382,11 +407,6 @@ class DashboardPage(QWidget):
             ])
 
     def _populate_backup_table(self, items: list[BackupCatalogItem]) -> None:
-        # Clear the filter so new results aren't hidden by a stale query
-        if hasattr(self, "backup_filter_box"):
-            self.backup_filter_box.blockSignals(True)
-            self.backup_filter_box.clear()
-            self.backup_filter_box.blockSignals(False)
         self.backup_table.setSortingEnabled(False)
         self.backup_table.setRowCount(0)
 
@@ -397,13 +417,16 @@ class DashboardPage(QWidget):
             row = self.backup_table.rowCount()
             self.backup_table.insertRow(row)
 
-            source_item = readonly_item(str(item.source_index))
-            name_item = readonly_item(item.display_name)
+            source_item = readonly_item(str(item.source_index), sort_key=(item.source_index, item.display_name.casefold()))
+            name_item = readonly_item(item.display_name, sort_key=_backup_name_sort_key(item))
             name_item.setData(Qt.ItemDataRole.UserRole, item.path)
             name_item.setToolTip(item.detail)
-            date_item = readonly_item(_display_backup_time(item.backup_time, item.path))
-            count_item = readonly_item(str(item.item_count))
-            status_item = badge_item(item.status)
+            date_item = readonly_item(
+                _display_backup_time(item.backup_time, item.path),
+                sort_key=_backup_time_sort_key(item.backup_time, item.path),
+            )
+            count_item = readonly_item(str(item.item_count), sort_key=item.item_count)
+            status_item = badge_item(item.status, sort_key=(item.status.casefold(), item.display_name.casefold()))
             status_item.setToolTip(item.detail)
             status_badge = badge(item.status, "valid" if item.is_valid else "review", min_width=92)
             status_badge.setToolTip(item.detail)
@@ -417,6 +440,44 @@ class DashboardPage(QWidget):
 
         self.backup_table.setSortingEnabled(True)
         self.backup_table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        self._apply_row_filter()
+        self._update_selection_summary()
+        self._update_empty_helper()
+
+    def _apply_row_filter(self) -> None:
+        query = self.backup_filter_box.text().strip().casefold()
+        status_filter = self.status_filter.currentText() if hasattr(self, "status_filter") else "All Statuses"
+        date_filter = self.date_filter.currentText() if hasattr(self, "date_filter") else "Any Date"
+        context_filter = self.context_filter.currentText() if hasattr(self, "context_filter") else "All Contexts"
+        duplicate_names = _duplicate_display_names(self.catalog_items)
+        saved_report_paths = _saved_report_paths(self.compare_records)
+        newest_mtime_by_source = _newest_source_mtimes(self.catalog_items)
+
+        for row in range(self.backup_table.rowCount()):
+            haystack_parts: list[str] = []
+            for col in range(self.backup_table.columnCount()):
+                cell = self.backup_table.item(row, col)
+                if cell is not None:
+                    haystack_parts.append(cell.text())
+            path_item = self.backup_table.item(row, 1)
+            if path_item is not None:
+                haystack_parts.append(str(path_item.data(Qt.ItemDataRole.UserRole) or ""))
+            haystack = " ".join(haystack_parts).casefold()
+            status_item = self.backup_table.item(row, 3)
+            status_text = str(status_item.data(Qt.ItemDataRole.UserRole) if status_item else "")
+            backup_path = str(path_item.data(Qt.ItemDataRole.UserRole) if path_item else "")
+            item = _catalog_item_for_path(self.catalog_items, backup_path)
+            query_match = not query or query in haystack
+            status_match = status_filter == "All Statuses" or status_text == status_filter
+            date_match = _matches_date_filter(item, date_filter)
+            context_match = _matches_context_filter(
+                item,
+                context_filter,
+                duplicate_names,
+                saved_report_paths,
+                newest_mtime_by_source,
+            )
+            self.backup_table.setRowHidden(row, not (query_match and status_match and date_match and context_match))
         self._update_selection_summary()
         self._update_empty_helper()
 
@@ -431,7 +492,11 @@ class DashboardPage(QWidget):
             else:
                 self.summary_label.setText("Add a backup directory in Settings, then scan the library.")
         elif selected_count == 0:
-            self.summary_label.setText(f"{len(self.catalog_items)} backups available. Select one to view or two to compare.")
+            visible = _visible_row_count(self.backup_table)
+            if visible != len(self.catalog_items):
+                self.summary_label.setText(f"{visible} of {len(self.catalog_items)} backups shown. Select one to view or two to compare.")
+            else:
+                self.summary_label.setText(f"{len(self.catalog_items)} backups available. Select one to view or two to compare.")
         elif selected_count == 1:
             self.summary_label.setText("1 selected — Enter to view, select one more to compare.")
         elif selected_count == 2:
@@ -474,19 +539,29 @@ class DashboardPage(QWidget):
         return frame
 
     def _update_empty_helper(self) -> None:
-        has_rows = self.backup_table.rowCount() > 0
-        self.backup_table.setVisible(has_rows)
-        if has_rows:
+        total_rows = self.backup_table.rowCount()
+        visible_rows = _visible_row_count(self.backup_table)
+        has_visible_rows = visible_rows > 0
+        self.backup_table.setVisible(has_visible_rows)
+        if has_visible_rows:
             self.empty_helper.setVisible(False)
             return
 
         roots = self._backup_roots()
         self.empty_helper.setVisible(True)
-        if roots:
+        if total_rows:
+            self.empty_helper_title.setText("No backups match the current filters")
+            self.empty_helper_body.setText(
+                "Adjust the source, status, date, context, or text filter to show more backups."
+            )
+            self.empty_helper_settings_btn.setVisible(False)
+            self.empty_helper_scan_btn.setVisible(False)
+        elif roots:
             self.empty_helper_title.setText("No backups are currently shown")
             self.empty_helper_body.setText(
                 "Backup sources are configured, but no backups are loaded yet. Click Scan to refresh the library."
             )
+            self.empty_helper_settings_btn.setVisible(True)
             self.empty_helper_settings_btn.setText("Manage Sources")
             self.empty_helper_scan_btn.setVisible(True)
         else:
@@ -494,6 +569,7 @@ class DashboardPage(QWidget):
             self.empty_helper_body.setText(
                 "Add the folder that contains your Group Policy backup directories, then run a scan."
             )
+            self.empty_helper_settings_btn.setVisible(True)
             self.empty_helper_settings_btn.setText("Set Up Directory")
             self.empty_helper_scan_btn.setVisible(False)
 
@@ -524,6 +600,119 @@ def _display_backup_time(backup_time: str, fallback_path: str) -> str:
         return modified.strftime("%m/%d/%Y %I:%M %p").replace(" 0", " ")
     except OSError:
         return "Not reported"
+
+
+def _backup_name_sort_key(item: BackupCatalogItem) -> tuple[str, int, str]:
+    return (item.display_name.casefold(), item.source_index, item.folder_name.casefold())
+
+
+def _backup_time_sort_key(backup_time: str, fallback_path: str) -> float:
+    if backup_time:
+        try:
+            return datetime.fromisoformat(backup_time).timestamp()
+        except ValueError:
+            pass
+    try:
+        return Path(fallback_path).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _catalog_item_for_path(items: list[BackupCatalogItem], path: str) -> BackupCatalogItem | None:
+    return next((item for item in items if item.path == path), None)
+
+
+def _duplicate_display_names(items: list[BackupCatalogItem]) -> set[str]:
+    sources_by_name: dict[str, set[int]] = {}
+    for item in items:
+        key = item.display_name.casefold()
+        sources_by_name.setdefault(key, set()).add(item.source_index)
+    return {name for name, sources in sources_by_name.items() if len(sources) > 1}
+
+
+def _saved_report_paths(records: list[Any]) -> set[str]:
+    paths: set[str] = set()
+    for record in records:
+        for attr in ("backup_a_path", "backup_b_path"):
+            value = str(getattr(record, attr, "") or "")
+            if value:
+                paths.add(value)
+    return paths
+
+
+def _newest_source_mtimes(items: list[BackupCatalogItem]) -> dict[str, float]:
+    newest: dict[str, float] = {}
+    for item in items:
+        try:
+            mtime = Path(item.path).stat().st_mtime
+        except OSError:
+            continue
+        current = newest.get(item.source_path, 0.0)
+        if mtime > current:
+            newest[item.source_path] = mtime
+    return newest
+
+
+def _item_timestamp(item: BackupCatalogItem | None) -> float:
+    if item is None:
+        return 0.0
+    if item.backup_time:
+        try:
+            return datetime.fromisoformat(item.backup_time).timestamp()
+        except ValueError:
+            pass
+    try:
+        return Path(item.path).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _matches_date_filter(item: BackupCatalogItem | None, label: str) -> bool:
+    if label == "Any Date":
+        return True
+    days = {
+        "Last 7 Days": 7,
+        "Last 30 Days": 30,
+        "Last 90 Days": 90,
+    }.get(label)
+    if days is None:
+        return True
+    timestamp = _item_timestamp(item)
+    if timestamp <= 0:
+        return False
+    age_seconds = datetime.now().timestamp() - timestamp
+    return age_seconds <= days * 24 * 60 * 60
+
+
+def _matches_context_filter(
+    item: BackupCatalogItem | None,
+    label: str,
+    duplicate_names: set[str],
+    saved_report_paths: set[str],
+    newest_mtime_by_source: dict[str, float],
+) -> bool:
+    if label == "All Contexts":
+        return True
+    if item is None:
+        return False
+    if label == "Duplicate Names":
+        return item.display_name.casefold() in duplicate_names
+    if label == "Has Warnings":
+        return not item.is_valid
+    if label == "Has Saved Report":
+        return item.path in saved_report_paths
+    if label == "Recently Changed":
+        try:
+            mtime = Path(item.path).stat().st_mtime
+        except OSError:
+            return False
+        newest = newest_mtime_by_source.get(item.source_path, 0.0)
+        return newest > 0 and newest - mtime <= 60
+    return True
+
+
+def _visible_row_count(table: QTableWidget) -> int:
+    return sum(1 for row in range(table.rowCount()) if not table.isRowHidden(row))
 
 
 def _short_value(value: str, limit: int = 180) -> str:

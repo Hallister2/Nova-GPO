@@ -19,36 +19,58 @@ THEMES = {
         "muted": "#85888E",
         "border": "rgba(255, 255, 255, 0.08)",
         "soft": "rgba(255, 255, 255, 0.04)",
+        "table_alt": "rgba(255, 255, 255, 0.035)",
         "hover": "#292A2D",
         "orange": "#FF8A1F",
         "orange_hover": "#FFA13D",
+        "orange_soft": "rgba(255, 138, 31, 0.13)",
+        "orange_border": "rgba(255, 138, 31, 0.30)",
+        "orange_focus": "rgba(255, 138, 31, 0.42)",
         "success": "#3DDC84",
+        "success_soft": "rgba(61, 220, 132, 0.13)",
+        "success_border": "rgba(61, 220, 132, 0.25)",
         "danger": "#FF4D4D",
+        "danger_soft": "rgba(255, 77, 77, 0.13)",
+        "danger_border": "rgba(255, 77, 77, 0.30)",
         "blue": "#82B6FF",
+        "blue_soft": "rgba(130, 182, 255, 0.13)",
+        "blue_border": "rgba(130, 182, 255, 0.25)",
         "badge": "#252628",
         "disabled": "#1A1B1D",
         "primary_text": "#16100A",
+        "scroll_handle": "#252628",
     },
     "clean_light": {
-        "app": "#E7E6E2",
-        "sidebar": "#DAD9D4",
-        "panel": "#F1F0EC",
-        "raised": "#E2E1DC",
-        "field": "#F8F7F3",
-        "text": "#202224",
-        "secondary": "#4F5358",
-        "muted": "#73777D",
-        "border": "rgba(32, 34, 36, 0.16)",
-        "soft": "rgba(32, 34, 36, 0.055)",
-        "hover": "#D4D3CE",
-        "orange": "#FF7A1A",
-        "orange_hover": "#FF8F33",
-        "success": "#0E9F6E",
-        "danger": "#E02424",
-        "blue": "#2F6FB7",
-        "badge": "#DFDED9",
-        "disabled": "#E1E0DC",
-        "primary_text": "#1C1308",
+        "app": "#F4F5F7",
+        "sidebar": "#E6E8EC",
+        "panel": "#FFFFFF",
+        "raised": "#EEF1F5",
+        "field": "#FFFFFF",
+        "text": "#111827",
+        "secondary": "#374151",
+        "muted": "#667085",
+        "border": "rgba(17, 24, 39, 0.18)",
+        "soft": "rgba(17, 24, 39, 0.06)",
+        "table_alt": "#F7F8FA",
+        "hover": "#E1E6EE",
+        "orange": "#F97316",
+        "orange_hover": "#EA580C",
+        "orange_soft": "rgba(249, 115, 22, 0.12)",
+        "orange_border": "rgba(249, 115, 22, 0.36)",
+        "orange_focus": "rgba(249, 115, 22, 0.52)",
+        "success": "#047857",
+        "success_soft": "rgba(4, 120, 87, 0.11)",
+        "success_border": "rgba(4, 120, 87, 0.28)",
+        "danger": "#B42318",
+        "danger_soft": "rgba(180, 35, 24, 0.11)",
+        "danger_border": "rgba(180, 35, 24, 0.30)",
+        "blue": "#1D4ED8",
+        "blue_soft": "rgba(29, 78, 216, 0.10)",
+        "blue_border": "rgba(29, 78, 216, 0.26)",
+        "badge": "#EEF2F6",
+        "disabled": "#E5E7EB",
+        "primary_text": "#1F1307",
+        "scroll_handle": "#C4CAD3",
     },
 }
 
@@ -83,7 +105,7 @@ QFrame#RaisedPanel {{
 
 QFrame#HeroPanel {{
     background-color: {t["panel"]};
-    border: 1px solid rgba(255, 138, 31, 0.22);
+    border: 1px solid {t["orange_border"]};
     border-radius: 8px;
 }}
 
@@ -162,33 +184,33 @@ QLabel#StatusBadge {{
 }}
 
 QLabel#StatusBadge[state="same"] {{
-    background-color: rgba(61, 220, 132, 0.13);
+    background-color: {t["success_soft"]};
     color: {t["success"]};
-    border: 1px solid rgba(61, 220, 132, 0.25);
+    border: 1px solid {t["success_border"]};
 }}
 
 QLabel#StatusBadge[state="diff"] {{
-    background-color: rgba(255, 77, 77, 0.13);
+    background-color: {t["danger_soft"]};
     color: {t["danger"]};
-    border: 1px solid rgba(255, 77, 77, 0.25);
+    border: 1px solid {t["danger_border"]};
 }}
 
 QLabel#StatusBadge[state="added"] {{
-    background-color: rgba(61, 220, 132, 0.13);
+    background-color: {t["success_soft"]};
     color: {t["success"]};
-    border: 1px solid rgba(61, 220, 132, 0.25);
+    border: 1px solid {t["success_border"]};
 }}
 
 QLabel#StatusBadge[state="removed"] {{
-    background-color: rgba(255, 77, 77, 0.13);
+    background-color: {t["danger_soft"]};
     color: {t["danger"]};
-    border: 1px solid rgba(255, 77, 77, 0.25);
+    border: 1px solid {t["danger_border"]};
 }}
 
 QLabel#StatusBadge[state="changed"] {{
-    background-color: rgba(255, 138, 31, 0.13);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.28);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QLabel#StatusBadge[state="unchanged"] {{
@@ -198,55 +220,55 @@ QLabel#StatusBadge[state="unchanged"] {{
 }}
 
 QLabel#StatusBadge[state="valid"] {{
-    background-color: rgba(61, 220, 132, 0.13);
+    background-color: {t["success_soft"]};
     color: {t["success"]};
-    border: 1px solid rgba(61, 220, 132, 0.25);
+    border: 1px solid {t["success_border"]};
 }}
 
 QLabel#StatusBadge[state="review"] {{
-    background-color: rgba(130, 182, 255, 0.13);
+    background-color: {t["blue_soft"]};
     color: {t["blue"]};
-    border: 1px solid rgba(130, 182, 255, 0.25);
+    border: 1px solid {t["blue_border"]};
 }}
 
 QLabel#StatusBadge[state="enabled"] {{
-    background-color: rgba(61, 220, 132, 0.13);
+    background-color: {t["success_soft"]};
     color: {t["success"]};
-    border: 1px solid rgba(61, 220, 132, 0.25);
+    border: 1px solid {t["success_border"]};
 }}
 
 QLabel#StatusBadge[state="disabled"] {{
-    background-color: rgba(255, 138, 31, 0.12);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.26);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QLabel#StatusBadge[state="unknown"] {{
-    background-color: rgba(255, 255, 255, 0.04);
+    background-color: {t["soft"]};
     color: {t["muted"]};
     border: 1px solid {t["border"]};
 }}
 
 QLabel#StatusBadge[state="severity-high"] {{
-    background-color: rgba(255, 77, 77, 0.14);
+    background-color: {t["danger_soft"]};
     color: {t["danger"]};
-    border: 1px solid rgba(255, 77, 77, 0.30);
+    border: 1px solid {t["danger_border"]};
 }}
 
 QLabel#StatusBadge[state="severity-medium"] {{
-    background-color: rgba(255, 138, 31, 0.13);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.28);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QLabel#StatusBadge[state="severity-low"] {{
-    background-color: rgba(130, 182, 255, 0.12);
+    background-color: {t["blue_soft"]};
     color: {t["blue"]};
-    border: 1px solid rgba(130, 182, 255, 0.24);
+    border: 1px solid {t["blue_border"]};
 }}
 
 QLabel#StatusBadge[state="empty"] {{
-    background-color: rgba(255, 255, 255, 0.035);
+    background-color: {t["soft"]};
     color: {t["muted"]};
     border: 1px solid {t["border"]};
 }}
@@ -262,7 +284,7 @@ QPushButton {{
 
 QPushButton:hover {{
     background-color: {t["hover"]};
-    border: 1px solid rgba(255, 138, 31, 0.24);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QPushButton#PrimaryButton {{
@@ -326,11 +348,19 @@ QComboBox {{
 }}
 
 QComboBox:hover {{
-    border: 1px solid rgba(255, 138, 31, 0.24);
+    border: 1px solid {t["orange_focus"]};
+}}
+
+QComboBox:focus {{
+    border: 1px solid {t["orange_focus"]};
 }}
 
 QLineEdit:hover {{
-    border: 1px solid rgba(255, 138, 31, 0.22);
+    border: 1px solid {t["orange_focus"]};
+}}
+
+QLineEdit:focus {{
+    border: 1px solid {t["orange_focus"]};
 }}
 
 QComboBox::drop-down {{
@@ -342,7 +372,7 @@ QComboBox QAbstractItemView {{
     background-color: {t["raised"]};
     color: {t["text"]};
     border: 1px solid {t["border"]};
-    selection-background-color: rgba(255, 138, 31, 0.18);
+    selection-background-color: {t["orange_soft"]};
 }}
 
 QSpinBox {{
@@ -354,7 +384,11 @@ QSpinBox {{
 }}
 
 QSpinBox:hover {{
-    border: 1px solid rgba(255, 138, 31, 0.24);
+    border: 1px solid {t["orange_focus"]};
+}}
+
+QSpinBox:focus {{
+    border: 1px solid {t["orange_focus"]};
 }}
 
 QTabWidget::pane {{
@@ -374,7 +408,7 @@ QTabBar::tab {{
 QTabBar::tab:selected {{
     background-color: {t["raised"]};
     color: {t["text"]};
-    border: 1px solid rgba(255, 138, 31, 0.34);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QTextEdit {{
@@ -393,13 +427,25 @@ QTextEdit#DetailText {{
     padding: 12px;
 }}
 
+QLabel#DetailText {{
+    background-color: {t["field"]};
+    color: {t["text"]};
+    border: 1px solid {t["border"]};
+    border-radius: 8px;
+    padding: 10px;
+}}
+
+QTextEdit:focus {{
+    border: 1px solid {t["orange_focus"]};
+}}
+
 QTableWidget {{
     background-color: {t["field"]};
     border: 1px solid {t["border"]};
     border-radius: 8px;
     gridline-color: transparent;
-    selection-background-color: rgba(255, 138, 31, 0.09);
-    alternate-background-color: {t["soft"]};
+    selection-background-color: {t["orange_soft"]};
+    alternate-background-color: {t["table_alt"]};
 }}
 
 QTableWidget::item {{
@@ -408,7 +454,7 @@ QTableWidget::item {{
 }}
 
 QTableWidget::item:selected {{
-    background-color: rgba(255, 138, 31, 0.13);
+    background-color: {t["orange_soft"]};
     color: {t["text"]};
 }}
 
@@ -428,9 +474,9 @@ QHeaderView::section {{
 }}
 
 QPushButton#TableActionButton {{
-    background-color: rgba(255, 138, 31, 0.10);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.38);
+    border: 1px solid {t["orange_border"]};
     border-radius: 6px;
     padding: 5px 10px;
     font-weight: 700;
@@ -456,28 +502,28 @@ QFrame#AccordionRow {{
 }}
 
 QFrame#AccordionRow[severity="high"] {{
-    border-left: 3px solid rgba(255, 77, 77, 0.55);
+    border-left: 3px solid {t["danger"]};
 }}
 
 QFrame#AccordionRow[severity="medium"] {{
-    border-left: 3px solid rgba(255, 138, 31, 0.55);
+    border-left: 3px solid {t["orange"]};
 }}
 
 QFrame#AccordionRow[severity="low"] {{
-    border-left: 3px solid rgba(130, 182, 255, 0.45);
+    border-left: 3px solid {t["blue"]};
 }}
 
 QFrame#AccordionRow[expanded="true"] {{
     background-color: {t["panel"]};
-    border: 1px solid rgba(255, 138, 31, 0.32);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QFrame#AccordionRow[expanded="true"][severity="high"] {{
-    border: 1px solid rgba(255, 77, 77, 0.42);
+    border: 1px solid {t["danger_border"]};
 }}
 
 QFrame#AccordionRow[expanded="true"][severity="low"] {{
-    border: 1px solid rgba(130, 182, 255, 0.38);
+    border: 1px solid {t["blue_border"]};
 }}
 
 QFrame#AccordionDetail {{
@@ -497,7 +543,7 @@ QScrollBar:vertical {{
 }}
 
 QScrollBar::handle:vertical {{
-    background: {t["badge"]};
+    background: {t["scroll_handle"]};
     border-radius: 6px;
     min-height: 28px;
 }}
@@ -562,9 +608,9 @@ QPushButton#ThemeButton {{
 }}
 
 QPushButton#ThemeButton[active="true"] {{
-    background-color: rgba(255, 138, 31, 0.14);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.34);
+    border: 1px solid {t["orange_border"]};
 }}
 
 QPushButton#ThemeButton:hover {{
@@ -573,7 +619,7 @@ QPushButton#ThemeButton:hover {{
 }}
 
 QPushButton#ThemeButton[active="true"]:hover {{
-    background-color: rgba(255, 138, 31, 0.18);
+    background-color: {t["orange_soft"]};
     color: {t["orange"]};
 }}
 
@@ -596,18 +642,18 @@ QFrame#Toast {{
 }}
 
 QFrame#Toast[kind="success"] {{
-    background-color: rgba(61, 220, 132, 0.14);
-    border: 1px solid rgba(61, 220, 132, 0.30);
+    background-color: {t["success_soft"]};
+    border: 1px solid {t["success_border"]};
 }}
 
 QFrame#Toast[kind="warning"] {{
-    background-color: rgba(255, 138, 31, 0.14);
-    border: 1px solid rgba(255, 138, 31, 0.30);
+    background-color: {t["orange_soft"]};
+    border: 1px solid {t["orange_border"]};
 }}
 
 QFrame#Toast[kind="error"] {{
-    background-color: rgba(255, 77, 77, 0.14);
-    border: 1px solid rgba(255, 77, 77, 0.30);
+    background-color: {t["danger_soft"]};
+    border: 1px solid {t["danger_border"]};
 }}
 
 QLabel#ToastIcon {{
@@ -628,7 +674,7 @@ QLabel#ToastText {{
 QPushButton#ToastAction {{
     background-color: transparent;
     color: {t["orange"]};
-    border: 1px solid rgba(255, 138, 31, 0.35);
+    border: 1px solid {t["orange_border"]};
     border-radius: 5px;
     padding: 3px 8px;
     font-size: 11px;
@@ -637,7 +683,7 @@ QPushButton#ToastAction {{
 }}
 
 QPushButton#ToastAction:hover {{
-    background-color: rgba(255, 138, 31, 0.14);
+    background-color: {t["orange_soft"]};
 }}
 
 QFrame#MetricCard {{
@@ -647,7 +693,7 @@ QFrame#MetricCard {{
 }}
 
 QFrame#MetricCard[clickable="true"]:hover {{
-    border: 1px solid rgba(255, 138, 31, 0.30);
+    border: 1px solid {t["orange_border"]};
     background-color: {t["hover"]};
 }}
 """

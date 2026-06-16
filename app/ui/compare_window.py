@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.branding import app_icon
 from app.ui.styles import THEMES
-from app.gpo.ilt_parser import ILT_HEADER
+from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
 from app.gpo.comparison_model import (
     PolicyDiff,
     build_backup_diff,
@@ -657,6 +657,12 @@ class CompareWindow(QDialog):
         summary.setWordWrap(True)
         outer.addWidget(summary)
 
+        review_summary = QLabel(_review_summary_html(item, self._review_for_item_readonly(item), self._ht), panel)
+        review_summary.setTextFormat(Qt.TextFormat.RichText)
+        review_summary.setWordWrap(True)
+        review_summary.setObjectName("DetailText")
+        outer.addWidget(review_summary)
+
         splitter = QSplitter(Qt.Orientation.Horizontal, panel)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(2)
@@ -695,8 +701,28 @@ class CompareWindow(QDialog):
         open_row.addWidget(open_b_btn)
         open_row.addStretch()
 
+        copy_summary_btn = QPushButton("Copy Summary", left)
+        copy_summary_btn.setObjectName("GhostButton")
+        copy_summary_btn.clicked.connect(lambda: QApplication.clipboard().setText(_review_summary_plain(item, self._review_for_item_readonly(item))))
+
+        copy_properties_btn = QPushButton("Copy Properties", left)
+        copy_properties_btn.setObjectName("GhostButton")
+        copy_properties_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "properties")))
+
+        copy_targeting_btn = QPushButton("Copy Targeting", left)
+        copy_targeting_btn.setObjectName("GhostButton")
+        copy_targeting_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "targeting")))
+
+        copy_row = QHBoxLayout()
+        copy_row.setSpacing(8)
+        copy_row.addWidget(copy_summary_btn)
+        copy_row.addWidget(copy_properties_btn)
+        copy_row.addWidget(copy_targeting_btn)
+        copy_row.addStretch()
+
         left_layout.addWidget(details)
         left_layout.addLayout(open_row)
+        left_layout.addLayout(copy_row)
 
         # ── RIGHT: review panel ──────────────────────────────────────────
         right = QFrame(splitter)
@@ -1232,6 +1258,101 @@ def _compact_summary(items: list[PolicyDiff]) -> str:
     )
 
 
+def _review_summary_html(item: PolicyDiff, review: dict[str, str], t: dict) -> str:
+    rows = _review_summary_rows(item, review)
+    cells = "".join(
+        f"<td style='padding:7px 10px; border-right:1px solid {t['border']}; vertical-align:top;'>"
+        f"<div style='color:{t['label']}; font-size:10px; font-weight:800; text-transform:uppercase;'>{escape(label)}</div>"
+        f"<div style='font-size:12px; font-weight:700;'>{escape(value)}</div>"
+        "</td>"
+        for label, value in rows
+    )
+    return (
+        f"<table width='100%' cellspacing='0' cellpadding='0' style='border:1px solid {t['border']};"
+        f" border-collapse:collapse; background:{t['card_bg']}; margin:0 0 6px 0;'>"
+        f"<tr>{cells}</tr></table>"
+    )
+
+
+def _review_summary_plain(item: PolicyDiff, review: dict[str, str]) -> str:
+    return "\n".join(f"{label}: {value}" for label, value in _review_summary_rows(item, review))
+
+
+def _review_summary_rows(item: PolicyDiff, review: dict[str, str]) -> list[tuple[str, str]]:
+    changes = setting_changes(item)
+    changed_value = next((change for change in changes if not change.lower().startswith(("added", "removed"))), "")
+    targeting = _targeting_change_label(item)
+    action = _action_change_label(item)
+    impact = _impact_change_label(item)
+    return [
+        ("Changed Value", _short_cell(changed_value or _status_label(item.status), 72)),
+        ("Targeting", targeting),
+        ("Action", action),
+        ("Impact", impact),
+        ("Review", review.get("status", "Pending Review") or "Pending Review"),
+    ]
+
+
+def _targeting_change_label(item: PolicyDiff) -> str:
+    if not item.policy_a and item.policy_b:
+        return "Added with policy"
+    if item.policy_a and not item.policy_b:
+        return "Removed with policy"
+    if not item.policy_a or not item.policy_b:
+        return "Not comparable"
+    a = _split_preference_sections(item.policy_a.settings)["targeting"]
+    b = _split_preference_sections(item.policy_b.settings)["targeting"]
+    if not a and b:
+        return "Added"
+    if a and not b:
+        return "Removed"
+    if a != b:
+        return "Changed"
+    return "No change"
+
+
+def _action_change_label(item: PolicyDiff) -> str:
+    if not item.policy_a or not item.policy_b:
+        return _status_label(item.status)
+    action_a = _first_setting_value(item.policy_a.settings, "Action")
+    action_b = _first_setting_value(item.policy_b.settings, "Action")
+    if action_a or action_b:
+        return f"{action_a or 'None'} -> {action_b or 'None'}" if action_a != action_b else "No change"
+    return "Not reported"
+
+
+def _impact_change_label(item: PolicyDiff) -> str:
+    policy = item.policy_b or item.policy_a
+    text = policy_text(item.policy_a) + "\n" + policy_text(item.policy_b)
+    lowered = text.casefold()
+    if any(token in lowered for token in ("security", "password", "credential", "privilege", "administrator", "firewall")):
+        return "Security review"
+    if any(token in lowered for token in ("registry", "hkey_", "reg_")):
+        return "Registry review"
+    if policy and policy.policy_type == "Preference":
+        return "Preference"
+    return "Standard"
+
+
+def _first_setting_value(settings: list[str], label: str) -> str:
+    prefix = f"{label}:".casefold()
+    for setting in settings:
+        if setting.casefold().startswith(prefix):
+            return setting.split(":", 1)[1].strip()
+    return ""
+
+
+def _copy_section_text(item: PolicyDiff, section: str) -> str:
+    def policy_lines(label: str, policy) -> list[str]:
+        if policy is None:
+            return [f"{label}: Not present"]
+        sections = _split_preference_sections(policy.settings)
+        lines = sections.get(section, [])
+        return [f"{label}:"] + (lines if lines else ["No values"])
+
+    return "\n".join(policy_lines("Backup A", item.policy_a) + [""] + policy_lines("Backup B", item.policy_b))
+
+
 def _status_label(status: str) -> str:
     return {
         "Added": "Missing in A",
@@ -1289,11 +1410,26 @@ def _detail_row(label: str, value: str, t: dict) -> str:
 
 
 def _split_ilt(settings: list[str]) -> tuple[list[str], list[str]]:
-    try:
-        idx = settings.index(ILT_HEADER)
-        return settings[:idx], settings[idx + 1:]
-    except ValueError:
-        return settings, []
+    sections = _split_preference_sections(settings)
+    regular = sections["properties"] + sections["common"]
+    return regular, sections["targeting"]
+
+
+def _split_preference_sections(settings: list[str]) -> dict[str, list[str]]:
+    sections = {"properties": [], "common": [], "targeting": []}
+    current = "properties"
+    for setting in settings:
+        if setting == GPP_PROPERTIES_HEADER:
+            current = "properties"
+            continue
+        if setting == GPP_COMMON_HEADER:
+            current = "common"
+            continue
+        if setting == ILT_HEADER:
+            current = "targeting"
+            continue
+        sections[current].append(setting)
+    return sections
 
 
 def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict, side: str) -> str:
@@ -1305,10 +1441,18 @@ def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict
         _settings_for_context(policy.settings, item, t, side) if item is not None else (policy.settings, "")
     )
     # Separate ILT lines from regular settings so they render in their own section
-    regular, ilt_rules = _split_ilt(all_settings)
+    sections = _split_preference_sections(all_settings)
+    regular = sections["properties"]
+    common = sections["common"]
+    ilt_rules = sections["targeting"]
 
     html = f"<p style='color:{t['label']}; font-size:11px; font-weight:700; margin:0 0 6px 0; text-transform:uppercase; letter-spacing:0.4px;'>Configured values</p>"
     html += _settings_html(regular, item, t, forced_side)
+    if common:
+        html += (
+            f"<p style='color:{t['label']}; font-size:11px; font-weight:700; margin:10px 0 4px 0; text-transform:uppercase; letter-spacing:0.4px;'>Common Options</p>"
+            + _settings_html(common, item, t, forced_side)
+        )
     if ilt_rules:
         html += (
             f"<p style='color:{t['label']}; font-size:11px; font-weight:700; margin:10px 0 4px 0; text-transform:uppercase; letter-spacing:0.4px;'>Item-Level Targeting</p>"
@@ -1340,16 +1484,20 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
             return f"{scope}  ›  {cat}" if scope else cat
         return scope
 
-    def regular_and_ilt(policy):
+    def policy_sections(policy):
         if policy is None:
-            return [], []
-        return _split_ilt(policy.settings)
+            return {"properties": [], "common": [], "targeting": []}
+        return _split_preference_sections(policy.settings)
 
-    reg_a, ilt_a = regular_and_ilt(policy_a)
-    reg_b, ilt_b = regular_and_ilt(policy_b)
+    sections_a = policy_sections(policy_a)
+    sections_b = policy_sections(policy_b)
+    reg_a, common_a, ilt_a = sections_a["properties"], sections_a["common"], sections_a["targeting"]
+    reg_b, common_b, ilt_b = sections_b["properties"], sections_b["common"], sections_b["targeting"]
 
-    norms_a = {_norm(s) for s in reg_a}
-    norms_b = {_norm(s) for s in reg_b}
+    compare_a = reg_a + common_a
+    compare_b = reg_b + common_b
+    norms_a = {_norm(s) for s in compare_a}
+    norms_b = {_norm(s) for s in compare_b}
 
     state_a = (policy_a.state if policy_a else "") or "Not Configured"
     state_b = (policy_b.state if policy_b else "") or "Not Configured"
@@ -1357,32 +1505,42 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
 
     def field_html(label: str, body: str) -> str:
         return (
-            f"<p style='margin:0 0 10px 0;'>"
-            f"<span style='color:{lbl}; font-size:11px; font-weight:700;"
-            f" text-transform:uppercase; letter-spacing:0.4px;'>{escape(label)}</span><br>"
+            f"<div style='margin:0 0 12px 0;'>"
+            f"<div style='color:{lbl}; font-size:11px; font-weight:700;"
+            f" text-transform:uppercase; letter-spacing:0.4px; margin-bottom:5px;'>{escape(label)}</div>"
             f"{body}"
-            f"</p>"
+            f"</div>"
         )
 
     def settings_body(settings: list[str], own_norms: set, other_norms: set, added_side: bool) -> str:
         if not settings:
             return f"<span style='color:{lbl}; font-style:italic;'>None available</span>"
-        lines = []
+        rows = []
         for s in settings:
             n = _norm(s)
+            key, value = _split_setting_pair(s)
             if n not in other_norms:
                 color = success if added_side else danger
-                lines.append(f"<span style='color:{color};'>{escape(s)}</span>")
+                rows.append(_kv_row_html(key, value, t, color))
             else:
-                lines.append(f"<span style='color:{text};'>{escape(s)}</span>")
-        return "<br>".join(lines)
+                rows.append(_kv_row_html(key, value, t, text))
+        return _kv_table_html(rows, t)
 
     def ilt_body(rules: list[str]) -> str:
         if not rules:
             return f"<span style='color:{lbl}; font-style:italic;'>None</span>"
-        return "<br>".join(f"<span style='color:{text};'>{escape(r)}</span>" for r in rules)
+        display_rules = _compact_targeting_rules(rules)
+        html = _ilt_rules_html(display_rules, t)
+        hidden_count = len(rules) - len(display_rules)
+        if hidden_count > 0:
+            html += (
+                f"<p style='color:{lbl}; font-size:11px; margin:4px 0 0 0;'>"
+                f"{hidden_count} additional targeting line(s) hidden in the compact view. Use Copy Targeting for the full section."
+                "</p>"
+            )
+        return html
 
-    def build_cell(policy, settings: list[str], ilt: list[str],
+    def build_cell(policy, settings: list[str], common: list[str], ilt: list[str],
                    state: str, state_differs: bool,
                    own_norms: set, other_norms: set, is_b_side: bool) -> str:
         if policy is None:
@@ -1394,25 +1552,30 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
 
         html = ""
         if path:
-            html += field_html("Path", f"<span style='color:{text}; font-size:12px;'>{escape(path)}</span>")
+            html += field_html("Path", _pill_html(path, t))
         if name:
-            html += field_html("Settings", f"<span style='color:{text}; font-size:12px;'>{escape(name)}</span>")
+            html += field_html("Setting", f"<div style='color:{text}; font-size:13px; font-weight:700;'>{escape(name)}</div>")
         html += field_html(
             "State",
-            f"<span style='color:{state_color}; font-size:12px; font-weight:700;'>{escape(state)}</span>",
+            f"<span style='color:{state_color}; font-size:12px; font-weight:800;'>{escape(state)}</span>",
         )
         html += field_html(
-            "Additional setting information",
+            "Properties",
             settings_body(settings, own_norms, other_norms, is_b_side),
         )
+        if common:
+            html += field_html(
+                "Common Options",
+                settings_body(common, own_norms, other_norms, is_b_side),
+            )
         if ilt or (item.policy_a and item.policy_b):
             html += field_html("Targeting information", ilt_body(ilt))
 
         return html
 
-    cell_a = build_cell(policy_a, reg_a, ilt_a, state_a, states_differ,
+    cell_a = build_cell(policy_a, reg_a, common_a, ilt_a, state_a, states_differ,
                         norms_a, norms_b, is_b_side=False)
-    cell_b = build_cell(policy_b, reg_b, ilt_b, state_b, states_differ,
+    cell_b = build_cell(policy_b, reg_b, common_b, ilt_b, state_b, states_differ,
                         norms_b, norms_a, is_b_side=True)
 
     return (
@@ -1446,6 +1609,98 @@ def _backup_card_html(title: str, color: str, policy, missing_text: str, item: P
         f"{_configured_html(policy, missing_text, item, t, side)}"
         "</div>"
     )
+
+
+def _split_setting_pair(setting: str) -> tuple[str, str]:
+    if ":" not in setting:
+        return "", setting.strip()
+    key, value = setting.split(":", 1)
+    return key.strip(), value.strip()
+
+
+def _kv_row_html(key: str, value: str, t: dict, value_color: str | None = None) -> str:
+    value_color = value_color or t["text"]
+    if not key:
+        return (
+            "<tr>"
+            f"<td colspan='2' style='padding:3px 6px; color:{value_color}; font-weight:700;'>"
+            f"{escape(value)}</td>"
+            "</tr>"
+        )
+    return (
+        "<tr>"
+        f"<td style='padding:3px 8px 3px 0; color:{t['label']}; width:34%; white-space:nowrap;"
+        f" font-size:11px; font-weight:700;'>{escape(key)}</td>"
+        f"<td style='padding:3px 0; color:{value_color}; font-size:12px;'>{escape(value)}</td>"
+        "</tr>"
+    )
+
+
+def _kv_table_html(rows: list[str], t: dict) -> str:
+    if not rows:
+        return f"<span style='color:{t['label']}; font-style:italic;'>None available</span>"
+    return (
+        f"<table cellspacing='0' cellpadding='0' width='100%'"
+        f" style='border-collapse:collapse; margin:0; background:{t['code_bg']};"
+        f" border:1px solid {t['border']};'>"
+        f"{''.join(rows)}"
+        "</table>"
+    )
+
+
+def _pill_html(value: str, t: dict) -> str:
+    return (
+        f"<span style='display:inline-block; color:{t['text']}; background:{t['code_bg']};"
+        f" border:1px solid {t['border']}; border-radius:4px; padding:4px 7px; font-size:12px;'>"
+        f"{escape(value)}</span>"
+    )
+
+
+def _ilt_rules_html(rules: list[str], t: dict) -> str:
+    cards: list[str] = []
+    current_title = ""
+    current_rows: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_title, current_rows
+        if not current_title and not current_rows:
+            return
+        title = current_title or "Targeting Rule"
+        rows_html = _kv_table_html(current_rows, t) if current_rows else ""
+        cards.append(
+            f"<div style='background:{t['code_bg']}; border:1px solid {t['border']};"
+            f" border-left:3px solid {t['blue']}; border-radius:4px; padding:7px 8px;"
+            f" margin:0 0 8px 0;'>"
+            f"<div style='color:{t['blue']}; font-size:12px; font-weight:800; margin-bottom:5px;'>"
+            f"{escape(title)}</div>"
+            f"{rows_html}"
+            "</div>"
+        )
+        current_title = ""
+        current_rows = []
+
+    for raw_rule in rules:
+        clean = raw_rule.strip()
+        if clean.startswith("•"):
+            flush()
+            current_title = clean.lstrip("•").strip()
+            continue
+        key, value = _split_setting_pair(clean)
+        current_rows.append(_kv_row_html(key, value, t))
+
+    flush()
+    if cards:
+        return "".join(cards)
+    return _kv_table_html([_kv_row_html("", rule.strip(), t) for rule in rules if rule.strip()], t)
+
+
+def _compact_targeting_rules(rules: list[str], max_lines: int = 18) -> list[str]:
+    if len(rules) <= max_lines:
+        return rules
+    compact = rules[:max_lines]
+    while compact and compact[-1].strip() and not compact[-1].strip().startswith("•"):
+        compact.pop()
+    return compact or rules[:max_lines]
 
 
 def _settings_html(settings: list[str], item: PolicyDiff | None, t: dict, forced_side: str = "") -> str:
