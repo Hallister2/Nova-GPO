@@ -231,8 +231,8 @@ class DashboardPage(QWidget):
         return panel
 
     def _build_backup_table(self) -> QTableWidget:
-        self.backup_table = QTableWidget(0, 5)
-        self.backup_table.setHorizontalHeaderLabels(["Source", "GPO Name", "Date", "Status", "Items"])
+        self.backup_table = QTableWidget(0, 6)
+        self.backup_table.setHorizontalHeaderLabels(["Source", "GPO Name", "Date", "Status", "Reports", "Items"])
         configure_enterprise_table(self.backup_table, row_height=38)
         self.backup_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self.backup_table.horizontalHeader().setStretchLastSection(False)
@@ -240,8 +240,9 @@ class DashboardPage(QWidget):
         self.backup_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.backup_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.backup_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.backup_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.backup_table.horizontalHeader().resizeSection(4, 60)
+        self.backup_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.backup_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.backup_table.horizontalHeader().resizeSection(5, 60)
         self.backup_table.itemSelectionChanged.connect(self._on_selection_changed)
         self.backup_table.cellDoubleClicked.connect(self._on_row_double_clicked)
         self.backup_table.installEventFilter(self)
@@ -409,6 +410,7 @@ class DashboardPage(QWidget):
     def _populate_backup_table(self, items: list[BackupCatalogItem]) -> None:
         self.backup_table.setSortingEnabled(False)
         self.backup_table.setRowCount(0)
+        report_summaries = _saved_report_summaries(self.compare_records)
 
         for item in sorted(
             items,
@@ -430,13 +432,27 @@ class DashboardPage(QWidget):
             status_item.setToolTip(item.detail)
             status_badge = badge(item.status, "valid" if item.is_valid else "review", min_width=92)
             status_badge.setToolTip(item.detail)
+            related_reports = report_summaries.get(item.path, [])
+            report_count = len(related_reports)
+            report_text = f"{report_count} report{'s' if report_count != 1 else ''}" if report_count else "None"
+            report_item = readonly_item(
+                "" if report_count else report_text,
+                user_data=report_text,
+                sort_key=(0 if report_count else 1, -report_count, item.display_name.casefold()),
+            )
+            report_item.setToolTip(_saved_report_tooltip(related_reports))
 
             self.backup_table.setItem(row, 0, source_item)
             self.backup_table.setItem(row, 1, name_item)
             self.backup_table.setItem(row, 2, date_item)
             self.backup_table.setItem(row, 3, status_item)
-            self.backup_table.setItem(row, 4, count_item)
+            self.backup_table.setItem(row, 4, report_item)
+            self.backup_table.setItem(row, 5, count_item)
             self.backup_table.setCellWidget(row, 3, status_badge)
+            if report_count:
+                report_badge = badge(report_text, "review", min_width=92)
+                report_badge.setToolTip(_saved_report_tooltip(related_reports))
+                self.backup_table.setCellWidget(row, 4, report_badge)
 
         self.backup_table.setSortingEnabled(True)
         self.backup_table.sortItems(1, Qt.SortOrder.AscendingOrder)
@@ -459,6 +475,8 @@ class DashboardPage(QWidget):
                 cell = self.backup_table.item(row, col)
                 if cell is not None:
                     haystack_parts.append(cell.text())
+                    if col == 4:
+                        haystack_parts.append(str(cell.data(Qt.ItemDataRole.UserRole) or ""))
             path_item = self.backup_table.item(row, 1)
             if path_item is not None:
                 haystack_parts.append(str(path_item.data(Qt.ItemDataRole.UserRole) or ""))
@@ -638,6 +656,41 @@ def _saved_report_paths(records: list[Any]) -> set[str]:
             if value:
                 paths.add(value)
     return paths
+
+
+def _saved_report_summaries(records: list[Any]) -> dict[str, list[Any]]:
+    summaries: dict[str, list[Any]] = {}
+    for record in records:
+        for attr in ("backup_a_path", "backup_b_path"):
+            value = str(getattr(record, attr, "") or "")
+            if value:
+                summaries.setdefault(value, []).append(record)
+    return summaries
+
+
+def _saved_report_tooltip(records: list[Any]) -> str:
+    if not records:
+        return "No saved compare report contains this backup."
+    lines = ["Saved compare reports containing this backup:"]
+    for record in records[:6]:
+        title = str(getattr(record, "title", "") or "Saved compare")
+        saved_at = _display_saved_report_time(str(getattr(record, "saved_at", "") or ""))
+        suffix = f" ({saved_at})" if saved_at else ""
+        lines.append(f"- {title}{suffix}")
+    remaining = len(records) - 6
+    if remaining > 0:
+        lines.append(f"- {remaining} more")
+    return "\n".join(lines)
+
+
+def _display_saved_report_time(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed.strftime("%m/%d/%Y %I:%M %p").replace(" 0", " ")
+    except ValueError:
+        return value
 
 
 def _newest_source_mtimes(items: list[BackupCatalogItem]) -> dict[str, float]:
