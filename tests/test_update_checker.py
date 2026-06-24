@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import ssl
 from urllib.error import URLError
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from app.core.update_checker import (
     _fetch_highest_release,
     _find_checksum_asset,
     _format_url_error,
+    github_ssl_context,
     _release_version,
     _is_newer_version,
     check_for_updates,
@@ -121,6 +123,12 @@ class UpdateCheckerTests(unittest.TestCase):
 
         self.assertIn("Could not verify GitHub's SSL certificate", message)
         self.assertNotIn("_ssl.c", message)
+
+    def test_github_ssl_context_returns_verifying_context(self) -> None:
+        context = github_ssl_context()
+
+        self.assertIsInstance(context, ssl.SSLContext)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 
 
 if __name__ == "__main__":

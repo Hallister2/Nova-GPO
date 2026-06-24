@@ -233,6 +233,73 @@ class TestCompareLibraryStore(unittest.TestCase):
             finally:
                 library_store.COMPARE_ARCHIVE_DIR = original_dir
 
+    def test_load_compare_record_merges_rich_report_json_without_overwriting_review(self) -> None:
+        with TemporaryDirectory() as root:
+            record_dir = Path(root) / "compare"
+            record_dir.mkdir()
+            compare_path = record_dir / library_store.COMPARE_RECORD_NAME
+            report_path = record_dir / "report.json"
+            compare_path.write_text(
+                json.dumps(
+                    {
+                        "title": "A vs B",
+                        "schema_version": 3,
+                        "backup_a": {"title": "A", "path": str(Path(root) / "a")},
+                        "backup_b": {"title": "B", "path": str(Path(root) / "b")},
+                        "summary": {"total_items": 1, "actionable": 1, "ignored": 0, "reviewed": 1},
+                        "generated_artifacts": {"json": str(report_path)},
+                        "findings": [
+                            {
+                                "key": "Policy",
+                                "name": "Policy",
+                                "status": "Different",
+                                "review": {"status": "Add Policy to Align", "notes": "Keep this review."},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "key": "Policy",
+                                "policy_a": {
+                                    "name": "Policy",
+                                    "state": "Enabled",
+                                    "scope": "Computer Configuration",
+                                    "category": "Group Policy Preferences > Registry",
+                                    "policy_type": "Preference",
+                                    "source": "gpreport.xml::Registry",
+                                    "settings": [
+                                        "── Properties ──",
+                                        "Action: Update",
+                                        "Name: OneDrive",
+                                        "── Item-Level Targeting ──",
+                                        "• Registry Match",
+                                        "Hive: HKEY_LOCAL_MACHINE",
+                                    ],
+                                },
+                                "policy_b": None,
+                                "review": {"status": "Pending Review"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = library_store.load_compare_record_payload(str(compare_path))
+
+            finding = payload["findings"][0]
+            self.assertEqual(finding["review"]["status"], "Make Changes to A")
+            self.assertEqual(finding["policy_a"]["settings"][2], "Name: OneDrive")
+            self.assertIsNone(finding["policy_b"])
+            self.assertEqual(payload["schema_version"], library_store.COMPARE_SCHEMA_VERSION)
+            self.assertEqual(payload["migrated_from_schema_version"], 3)
+
     def test_regenerate_compare_record_rebuilds_reports_when_sources_exist(self) -> None:
         with TemporaryDirectory() as root:
             original_dir = library_store.COMPARE_ARCHIVE_DIR

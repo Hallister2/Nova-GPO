@@ -11,6 +11,7 @@ from pathlib import Path
 from app import __version__
 from app.gpo.comparison_model import PolicyDiff, setting_changes
 from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
+from app.review_status import normalize_review_status
 from app.reports.insights import diagnostics_dict, parser_diagnostics, risk_counts, risk_tag
 
 
@@ -48,9 +49,31 @@ def csv_report(
             writer.writerow([f"{label} impact", value])
         return output.getvalue()
 
-    writer.writerow(["Policy Name", "Status", "Risk", "Scope", "Type", "Source", "Changes"])
+    writer.writerow([
+        "Policy Name",
+        "Status",
+        "Risk",
+        "Scope",
+        "Type",
+        "Source",
+        "State A",
+        "State B",
+        "Review Status",
+        "Priority",
+        "Owner",
+        "Ticket",
+        "Tags",
+        "Changes",
+        "Recommended Actions",
+        "Supporting Evidence",
+    ])
     for item in _items_for_profile(diff_items, profile):
         name = item.policy_b.name if item.policy_b else (item.policy_a.name if item.policy_a else "Unknown")
+        review = (review_notes or {}).get(item.key, {})
+        actions = [
+            f"{action} {target}: {detail}"
+            for action, target, detail in remediation_steps(item)
+        ]
         writer.writerow([
             name,
             _status_label(item.status),
@@ -58,7 +81,16 @@ def csv_report(
             item.scope,
             _policy_type(item),
             _policy_source(item),
+            item.state_a,
+            item.state_b,
+            normalize_review_status(review.get("status", "Pending Review")),
+            review.get("priority", "Normal"),
+            review.get("owner", ""),
+            review.get("ticket", ""),
+            review.get("tags", ""),
             "; ".join(setting_changes(item)),
+            "; ".join(actions),
+            "; ".join(item.supporting_evidence),
         ])
     return output.getvalue()
 
@@ -132,7 +164,7 @@ def markdown_report(
         report.append(f"- Type: {_policy_type(item)}")
         report.append(f"- Source: {_policy_source(item)}")
         review = notes.get(item.key, {})
-        review_status = review.get("status", "Pending Review")
+        review_status = normalize_review_status(review.get("status", "Pending Review"))
         report.append(f"- Review Status: {review_status}")
         if review.get("priority", "Normal") != "Normal":
             report.append(f"- Priority: {review['priority']}")
@@ -147,7 +179,12 @@ def markdown_report(
         if review.get("notes", "").strip():
             report.append(f"- Notes: {review['notes'].strip()}")
         report.append("")
-        report.append("### Detected Changes")
+        report.append("#### Review Summary")
+        report.append("")
+        for label, value in _markdown_review_summary(item, review):
+            report.append(f"- {label}: {value}")
+        report.append("")
+        report.append("#### Detected Changes")
         report.append("")
 
         for change in setting_changes(item):
@@ -156,14 +193,21 @@ def markdown_report(
         remediation = remediation_steps(item)
         if remediation:
             report.append("")
-            report.append("### Remediation")
+            report.append("#### Remediation")
             report.append("")
             for action, target, detail in remediation:
                 report.append(f"- **{action} {target}:** {detail}")
 
+        report.append("")
+        report.append("#### Compared Values")
+        report.append("")
+        report.extend(_markdown_policy_values("Backup A", item.policy_a))
+        report.append("")
+        report.extend(_markdown_policy_values("Backup B", item.policy_b))
+
         if item.supporting_evidence:
             report.append("")
-            report.append("### Supporting Evidence")
+            report.append("#### Supporting Evidence")
             report.append("")
             for evidence in item.supporting_evidence:
                 report.append(f"- {evidence}")
@@ -312,7 +356,7 @@ def html_report(
 def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> str:
     name = item.policy_b.name if item.policy_b else (item.policy_a.name if item.policy_a else "Unknown")
     review = notes.get(item.key, {})
-    review_status = review.get("status", "Pending Review")
+    review_status = normalize_review_status(review.get("status", "Pending Review"))
     changes = setting_changes(item)
 
     status_cls = f"badge-status-{item.status.lower()}"
@@ -411,6 +455,40 @@ def _update_policy_steps(target_label: str, source_label: str, target_policy, so
     if _norm_text(target_policy.state) != _norm_text(source_policy.state):
         steps.append(("Update", target_label, f"Set state to '{source_policy.state or 'Not configured'}' to match {source_label}."))
 
+    target_entries = _setting_entry_map(target_policy)
+    source_entries = _setting_entry_map(source_policy)
+    if target_entries or source_entries:
+        for key in sorted(set(source_entries) & set(target_entries)):
+            source_entry = source_entries[key]
+            target_entry = target_entries[key]
+            if _norm_text(source_entry["value"]) == _norm_text(target_entry["value"]):
+                continue
+            steps.append((
+                "Update",
+                target_label,
+                (
+                    f"{source_entry['context']}: set to {_quote_value(source_entry['value'])} "
+                    f"to match {source_label} (currently {_quote_value(target_entry['value'])})."
+                ),
+            ))
+
+        for key in sorted(set(source_entries) - set(target_entries)):
+            source_entry = source_entries[key]
+            steps.append((
+                "Add/Update",
+                target_label,
+                f"{source_entry['context']}: add {_quote_value(source_entry['value'])} to match {source_label}.",
+            ))
+
+        for key in sorted(set(target_entries) - set(source_entries)):
+            target_entry = target_entries[key]
+            steps.append((
+                "Remove",
+                target_label,
+                f"{target_entry['context']}: remove {_quote_value(target_entry['value'])}; it is not present in {source_label}.",
+            ))
+        return steps
+
     target_settings = {_norm_text(setting): setting for setting in target_policy.settings}
     source_settings = {_norm_text(setting): setting for setting in source_policy.settings}
 
@@ -442,9 +520,11 @@ def _policy_setting_details(policy) -> list[str]:
         if setting == ILT_HEADER:
             current = "Item-Level Targeting"
             continue
-        clean = _clean_setting(setting)
-        if clean:
-            details.append(f"{current}: {clean}")
+        label, value = _split_setting_line(setting)
+        if label and value:
+            details.append(f"{current}: {label}: {value}")
+        elif label:
+            details.append(f"{current}: {label}")
     return details
 
 
@@ -459,7 +539,69 @@ def _setting_context(setting: str) -> str:
 
 
 def _clean_setting(setting: str) -> str:
-    return setting.strip().lstrip("•").lstrip("â€¢").strip()
+    clean = setting.strip().lstrip("•").lstrip("â€¢").lstrip("Ã¢â‚¬Â¢").strip()
+    return clean.replace("::", ":")
+
+
+def _split_setting_line(setting: str) -> tuple[str, str]:
+    clean = _clean_setting(setting)
+    if ":" not in clean:
+        return clean, ""
+    label, value = clean.split(":", 1)
+    return label.strip(), value.strip().lstrip(":").strip()
+
+
+def _is_targeting_rule_title(setting: str) -> bool:
+    clean = setting.strip()
+    return clean.startswith("•") or clean.startswith("â€¢") or clean.startswith("Ã¢â‚¬Â¢")
+
+
+def _setting_entry_map(policy) -> dict[tuple[str, str, str], dict[str, str]]:
+    entries: dict[tuple[str, str, str], dict[str, str]] = {}
+    section = "Properties"
+    rule = ""
+    rule_index = 0
+
+    for setting in policy.settings or []:
+        if setting == GPP_PROPERTIES_HEADER:
+            section = "Properties"
+            rule = ""
+            rule_index = 0
+            continue
+        if setting == GPP_COMMON_HEADER:
+            section = "Common Options"
+            rule = ""
+            rule_index = 0
+            continue
+        if setting == ILT_HEADER:
+            section = "Item-Level Targeting"
+            rule = ""
+            rule_index = 0
+            continue
+        if _is_targeting_rule_title(setting):
+            rule_index += 1
+            rule = _clean_setting(setting)
+            continue
+
+        label, value = _split_setting_line(setting)
+        if not label:
+            continue
+        rule_key = f"{rule_index}:{rule}" if rule else ""
+        key = (_norm_text(section), _norm_text(rule_key), _norm_text(label))
+        context = " > ".join(part for part in (section, rule, label) if part)
+        entries[key] = {
+            "context": context,
+            "label": label,
+            "value": value,
+            "raw": _clean_setting(setting),
+        }
+
+    return entries
+
+
+def _quote_value(value: str) -> str:
+    clean = str(value or "").strip()
+    return f"'{clean}'" if clean else "(blank)"
 
 
 def _is_section_header(setting: str) -> bool:
@@ -552,12 +694,12 @@ def _settings_section_html(title: str, settings: list[str]) -> str:
 
 
 def _kv_row_html(setting: str) -> str:
-    if ":" not in setting:
-        return f'<tr><td colspan="2" class="kv-value"><strong>{escape(setting.strip())}</strong></td></tr>'
-    key, value = setting.split(":", 1)
+    key, value = _split_setting_line(setting)
+    if not value:
+        return f'<tr><td colspan="2" class="kv-value"><strong>{escape(key)}</strong></td></tr>'
     return (
-        f'<tr><td class="kv-key">{escape(key.strip())}</td>'
-        f'<td class="kv-value">{escape(value.strip())}</td></tr>'
+        f'<tr><td class="kv-key">{escape(key)}</td>'
+        f'<td class="kv-value">{escape(value)}</td></tr>'
     )
 
 
@@ -619,6 +761,71 @@ def _review_html(review: dict[str, str]) -> str:
     return f'<div class="review-note">{body}</div>'
 
 
+def _markdown_review_summary(item: PolicyDiff, review: dict[str, str]) -> list[tuple[str, str]]:
+    changes = setting_changes(item)
+    targeting = _targeting_summary(item)
+    return [
+        ("State", f"{item.state_a or 'Not present'} -> {item.state_b or 'Not present'}"),
+        ("Targeting", targeting),
+        ("Primary delta", changes[0] if changes else "No setting-level delta was reported."),
+        ("Review", normalize_review_status(review.get("status", "Pending Review"))),
+    ]
+
+
+def _targeting_summary(item: PolicyDiff) -> str:
+    if not item.policy_a and item.policy_b:
+        return "Added with policy"
+    if item.policy_a and not item.policy_b:
+        return "Removed with policy"
+    if not item.policy_a or not item.policy_b:
+        return "Not comparable"
+    a = _split_preference_sections(item.policy_a.settings or [])["targeting"]
+    b = _split_preference_sections(item.policy_b.settings or [])["targeting"]
+    if not a and not b:
+        return "None"
+    if not a and b:
+        return "Added"
+    if a and not b:
+        return "Removed"
+    return "Changed" if a != b else "No change"
+
+
+def _markdown_policy_values(label: str, policy) -> list[str]:
+    if policy is None:
+        return [f"**{label}:** Not present."]
+
+    lines = [
+        f"**{label}: {policy.name or 'Unknown'}**",
+        f"- State: {policy.state or 'Not reported'}",
+        f"- Category: {policy.category or 'Not reported'}",
+        f"- Type: {policy.policy_type or 'Unknown'}",
+        f"- Source: {policy.source or 'gpreport.xml'}",
+    ]
+    if policy.supported:
+        lines.append(f"- Supported On: {policy.supported}")
+
+    sections = _split_preference_sections(policy.settings or [])
+    for title, key in [
+        ("Properties", "properties"),
+        ("Common Options", "common"),
+        ("Item-Level Targeting", "targeting"),
+    ]:
+        values = sections[key]
+        if not values:
+            continue
+        lines.append(f"- {title}:")
+        for setting in values:
+            label_text, value = _split_setting_line(setting)
+            if value:
+                lines.append(f"  - {label_text}: {value}")
+            elif label_text:
+                lines.append(f"  - {label_text}")
+
+    if not any(line.startswith("- Properties:") or line.startswith("- Common") or line.startswith("- Item-Level") for line in lines):
+        lines.append("- Configured values: No configured value details were found.")
+    return lines
+
+
 def _evidence_html(evidence: tuple[str, ...]) -> str:
     if not evidence:
         return ""
@@ -671,6 +878,10 @@ def json_report(
             "state_a": item.state_a,
             "state_b": item.state_b,
             "changes": setting_changes(item),
+            "review_summary": {
+                label.lower().replace(" ", "_"): value
+                for label, value in _markdown_review_summary(item, notes.get(item.key, {}))
+            },
             "remediation": [
                 {"action": action, "target": target, "detail": detail}
                 for action, target, detail in remediation_steps(item)
@@ -679,10 +890,11 @@ def json_report(
             "supporting_evidence": list(item.supporting_evidence),
             "policy_a": _policy_dict(item.policy_a),
             "policy_b": _policy_dict(item.policy_b),
-            "review": notes.get(item.key, {}),
+            "review": _normalized_review(notes.get(item.key, {})),
         })
 
     payload = {
+        "schema_version": 2,
         "generated": now,
         "app_version": __version__,
         "backup_a": title_a,
@@ -705,6 +917,13 @@ def json_report(
     }
 
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _normalized_review(review: dict[str, str]) -> dict[str, str]:
+    return {
+        **review,
+        "status": normalize_review_status(review.get("status", "Pending Review")),
+    }
 
 
 def write_report_bundle(
@@ -767,11 +986,11 @@ def _summary_counts(
     removed = sum(1 for item in diff_items if item.status == "Removed")
     ignored = sum(
         1 for item in actionable_items(diff_items)
-        if notes.get(item.key, {}).get("status", "Pending Review") in NON_ACTIONABLE_REVIEW_STATUSES
+        if normalize_review_status(notes.get(item.key, {}).get("status", "Pending Review")) in NON_ACTIONABLE_REVIEW_STATUSES
     )
     reviewed = sum(
         1 for item in actionable_items(diff_items)
-        if notes.get(item.key, {}).get("status", "Pending Review") != "Pending Review"
+        if normalize_review_status(notes.get(item.key, {}).get("status", "Pending Review")) != "Pending Review"
     )
     actionable = changed + added + removed - ignored
     return {

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.core.settings import REPORTS_DIR
 from app.library_store import load_compare_record_payload, update_compare_record_reviews
+from app.review_status import REVIEW_STATUS_COLORS, REVIEW_STATUSES, normalize_review_status
 from app.ui.branding import app_icon
 from app.ui.widgets import badge
 
@@ -53,6 +54,8 @@ _REVIEW_STATUS_COLOR: dict[str, str] = {
 }
 
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
+_REVIEW_STATUSES = REVIEW_STATUSES
+_REVIEW_STATUS_COLOR = REVIEW_STATUS_COLORS
 
 _WINDOW_FLAGS = (
     Qt.WindowType.Dialog |
@@ -272,7 +275,7 @@ class ArchivedCompareWindow(QDialog):
         self.list_widget.clear()
         for finding in findings:
             key = str(finding.get("key", ""))
-            rs = (self.reviews.get(key) or {}).get("status") or "Pending Review"
+            rs = normalize_review_status((self.reviews.get(key) or {}).get("status") or "Pending Review")
             item = QListWidgetItem(_finding_label(finding, rs))
             item.setData(Qt.ItemDataRole.UserRole, finding)
             item.setToolTip(str(finding.get("name") or finding.get("key") or ""))
@@ -332,7 +335,7 @@ class ArchivedCompareWindow(QDialog):
             _finding_detail_html(finding, self._backup_a_title, self._backup_b_title)
         )
 
-        self.review_status.setCurrentText(str(review.get("status") or "Pending Review"))
+        self.review_status.setCurrentText(normalize_review_status(review.get("status") or "Pending Review"))
         self.review_priority.setCurrentText(str(review.get("priority") or "Normal"))
         self.owner_box.setText(str(review.get("owner") or ""))
         self.ticket_box.setText(str(review.get("ticket") or ""))
@@ -429,12 +432,15 @@ def _finding_label(finding: dict[str, Any], review_status: str = "") -> str:
     scope = str(finding.get("scope") or "")
     scope_short = scope.split(" ")[-1] if scope else ""   # "Configuration" → last word only
     header = f"{status}  ·  {scope_short}" if scope_short else status
-    rs = review_status or "Pending Review"
+    rs = normalize_review_status(review_status or "Pending Review")
     return f"{header}\n{name}\n{rs}"
 
 
 def _apply_review_style(item: QListWidgetItem, review_status: str) -> None:
-    color_hex = _REVIEW_STATUS_COLOR.get(review_status, _REVIEW_STATUS_COLOR["Pending Review"])
+    color_hex = _REVIEW_STATUS_COLOR.get(
+        normalize_review_status(review_status),
+        _REVIEW_STATUS_COLOR["Pending Review"],
+    )
     item.setForeground(QColor(color_hex))
 
 
@@ -475,6 +481,8 @@ def _finding_detail_html(
     state_b     = str(finding.get("state_b") or "").strip()
     changes: list[str]  = [str(c) for c in (finding.get("changes") or []) if c]
     evidence: list[str] = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
+    if isinstance(finding.get("policy_a"), dict) or isinstance(finding.get("policy_b"), dict):
+        return _full_finding_detail_html(finding, backup_a_title, backup_b_title)
 
     path = (
         f"{scope}  ›  {cat}"
@@ -763,6 +771,227 @@ def _finding_detail_html(
     return "".join(parts)
 
 
+def _full_finding_detail_html(
+    finding: dict[str, Any],
+    backup_a_title: str,
+    backup_b_title: str,
+) -> str:
+    colors = {
+        "raised": "#202123",
+        "panel": "#151617",
+        "border": "rgba(255,255,255,0.08)",
+        "text": "#F4F6F8",
+        "muted": "#85888E",
+        "label": "#C0C3C7",
+        "orange": "#FF8A1F",
+        "blue": "#82B6FF",
+    }
+    status = str(finding.get("status") or "Unknown")
+    review = finding.get("review") if isinstance(finding.get("review"), dict) else {}
+    changes = [str(c) for c in (finding.get("changes") or []) if c]
+    evidence = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
+    policy_a = finding.get("policy_a") if isinstance(finding.get("policy_a"), dict) else None
+    policy_b = finding.get("policy_b") if isinstance(finding.get("policy_b"), dict) else None
+
+    html = [
+        f"<div style='font-size:13px; line-height:1.55; color:{colors['text']};'>",
+        (
+            f"<div style='background:{colors['raised']}; border:1px solid {colors['border']};"
+            f" border-left:3px solid {colors['orange']}; padding:9px 12px; margin:0 0 12px 0;'>"
+            f"<div style='color:{colors['muted']}; font-size:10px; font-weight:800; text-transform:uppercase;'>Review Context</div>"
+            f"<div style='font-weight:800; color:{colors['text']}; margin-top:2px;'>"
+            f"{_esc(status)} &nbsp;·&nbsp; {_esc(normalize_review_status(review.get('status') or 'Pending Review'))}</div>"
+            "</div>"
+        ),
+    ]
+    if changes:
+        html.append(_summary_card_html("Detected Delta", changes, colors["orange"], colors))
+    html.append(
+        f"<p style='color:{colors['blue']}; font-weight:800; font-size:11px; text-transform:uppercase;"
+        f" letter-spacing:0.5px; margin:14px 0 8px 0;'>Complete configuration data</p>"
+    )
+    html.append(_policy_config_card_html("Backup A", backup_a_title, policy_a, colors["label"], colors))
+    html.append(_policy_config_card_html("Backup B", backup_b_title, policy_b, colors["orange"], colors))
+    if evidence:
+        html.append(_summary_card_html("Supporting Evidence", evidence, colors["label"], colors))
+    html.append("</div>")
+    return "".join(html)
+
+
+def _policy_config_card_html(
+    side_label: str,
+    backup_title: str,
+    policy: dict[str, Any] | None,
+    accent: str,
+    colors: dict[str, str],
+) -> str:
+    if not policy:
+        return (
+            f"<div style='border:1px solid {colors['border']}; border-left:3px solid {accent};"
+            f" background:{colors['panel']}; padding:12px; margin:0 0 12px 0;'>"
+            f"<div style='color:{accent}; font-weight:800;'>{_esc(side_label)} · {_esc(backup_title)}</div>"
+            f"<p style='color:{colors['muted']}; margin:8px 0 0 0;'>This item is not present in this backup.</p>"
+            "</div>"
+        )
+
+    settings = [str(s) for s in (policy.get("settings") or [])]
+    sections = _split_saved_policy_sections(settings)
+    meta_rows = [
+        ("Name", str(policy.get("name") or "Unknown")),
+        ("State", str(policy.get("state") or "Not reported")),
+        ("Path", _policy_path(policy)),
+        ("Type", str(policy.get("policy_type") or "Unknown")),
+        ("Source", str(policy.get("source") or "gpreport.xml")),
+    ]
+    supported = str(policy.get("supported") or "").strip()
+    if supported:
+        meta_rows.append(("Supported On", supported))
+
+    html = [
+        f"<div style='border:1px solid {colors['border']}; border-left:3px solid {accent};"
+        f" background:{colors['panel']}; padding:12px; margin:0 0 12px 0;'>",
+        f"<div style='color:{accent}; font-weight:800; margin-bottom:8px;'>{_esc(side_label)} · {_esc(backup_title)}</div>",
+        _kv_table(meta_rows, colors),
+        _section_table("Properties", sections["properties"], colors),
+    ]
+    if sections["common"]:
+        html.append(_section_table("Common Options", sections["common"], colors))
+    if sections["targeting"]:
+        html.append(_targeting_cards_html(sections["targeting"], colors))
+    explain = str(policy.get("explain") or "").strip()
+    if explain:
+        html.append(
+            f"<div style='margin-top:10px;'><div style='color:{colors['orange']}; font-size:11px; font-weight:800;"
+            f" text-transform:uppercase;'>Explanation</div>"
+            f"<pre style='white-space:pre-wrap; color:{colors['text']}; background:{colors['raised']};"
+            f" border:1px solid {colors['border']}; padding:8px; margin:5px 0 0 0;'>{_esc(explain)}</pre></div>"
+        )
+    html.append("</div>")
+    return "".join(html)
+
+
+def _policy_path(policy: dict[str, Any]) -> str:
+    scope = str(policy.get("scope") or "")
+    category = str(policy.get("category") or "").strip()
+    if category and category not in ("Not reported", "Not categorized"):
+        return f"{scope} > {category}" if scope else category
+    return scope or "Not reported"
+
+
+def _split_saved_policy_sections(settings: list[str]) -> dict[str, list[str]]:
+    sections = {"properties": [], "common": [], "targeting": []}
+    current = "properties"
+    for setting in settings:
+        if "Properties" in setting and "──" in setting:
+            current = "properties"
+            continue
+        if "Common Options" in setting and "──" in setting:
+            current = "common"
+            continue
+        if "Item-Level Targeting" in setting and "──" in setting:
+            current = "targeting"
+            continue
+        if "Properties" in setting and setting.strip().startswith("â"):
+            current = "properties"
+            continue
+        if "Common Options" in setting and setting.strip().startswith("â"):
+            current = "common"
+            continue
+        if "Item-Level Targeting" in setting and setting.strip().startswith("â"):
+            current = "targeting"
+            continue
+        sections[current].append(setting)
+    return sections
+
+
+def _section_table(title: str, settings: list[str], colors: dict[str, str]) -> str:
+    if not settings:
+        return ""
+    rows = [_setting_pair(setting) for setting in settings if str(setting).strip()]
+    return (
+        f"<div style='margin-top:10px;'><div style='color:{colors['orange']}; font-size:11px; font-weight:800;"
+        f" text-transform:uppercase;'>{_esc(title)}</div>{_kv_table(rows, colors)}</div>"
+    )
+
+
+def _targeting_cards_html(settings: list[str], colors: dict[str, str]) -> str:
+    cards: list[str] = []
+    current_title = "Targeting Rule"
+    current_rows: list[tuple[str, str]] = []
+
+    def flush() -> None:
+        nonlocal current_title, current_rows
+        if not current_rows and current_title == "Targeting Rule":
+            return
+        cards.append(
+            f"<div style='background:{colors['raised']}; border:1px solid {colors['border']};"
+            f" border-left:3px solid {colors['blue']}; padding:8px; margin:6px 0;'>"
+            f"<div style='color:{colors['blue']}; font-weight:800; margin-bottom:5px;'>{_esc(current_title)}</div>"
+            f"{_kv_table(current_rows, colors)}</div>"
+        )
+        current_title = "Targeting Rule"
+        current_rows = []
+
+    for setting in settings:
+        clean = str(setting).strip()
+        if not clean:
+            continue
+        if clean.startswith("•") or clean.startswith("â€¢"):
+            flush()
+            current_title = _clean_saved_setting(clean)
+        else:
+            current_rows.append(_setting_pair(clean))
+    flush()
+    if not cards:
+        return ""
+    return (
+        f"<div style='margin-top:10px;'><div style='color:{colors['blue']}; font-size:11px; font-weight:800;"
+        f" text-transform:uppercase;'>Item-Level Targeting</div>{''.join(cards)}</div>"
+    )
+
+
+def _kv_table(rows: list[tuple[str, str]], colors: dict[str, str]) -> str:
+    if not rows:
+        return f"<p style='color:{colors['muted']}; margin:4px 0;'>No values recorded.</p>"
+    body = ""
+    for label, value in rows:
+        display_value = _esc(value) if value else f"<span style='color:{colors['muted']};'>(blank)</span>"
+        body += (
+            "<tr>"
+            f"<td style='color:{colors['muted']}; font-weight:800; width:34%; padding:4px 10px 4px 0;"
+            f" border-bottom:1px solid {colors['border']}; vertical-align:top;'>{_esc(label)}</td>"
+            f"<td style='color:{colors['text']}; padding:4px 0; border-bottom:1px solid {colors['border']};"
+            f" vertical-align:top;'>{display_value}</td>"
+            "</tr>"
+        )
+    return (
+        f"<table cellspacing='0' cellpadding='0' width='100%' style='border-collapse:collapse;"
+        f" background:{colors['raised']}; border:1px solid {colors['border']}; margin-top:5px;'>{body}</table>"
+    )
+
+
+def _setting_pair(setting: str) -> tuple[str, str]:
+    clean = _clean_saved_setting(setting)
+    if ":" not in clean:
+        return clean, ""
+    label, value = clean.split(":", 1)
+    return label.strip(), value.strip().lstrip(":").strip()
+
+
+def _clean_saved_setting(setting: str) -> str:
+    return str(setting).strip().lstrip("•").lstrip("â€¢").strip().replace("::", ":")
+
+
+def _summary_card_html(title: str, lines: list[str], accent: str, colors: dict[str, str]) -> str:
+    rows = "".join(f"<li style='padding:2px 0; color:{colors['text']};'>{_esc(line)}</li>" for line in lines)
+    return (
+        f"<div style='background:{colors['raised']}; border:1px solid {colors['border']};"
+        f" border-left:3px solid {accent}; padding:8px 12px; margin:0 0 12px 0;'>"
+        f"<div style='color:{accent}; font-size:11px; font-weight:800; text-transform:uppercase;'>{_esc(title)}</div>"
+        f"<ul style='margin:6px 0 0 0; padding-left:18px;'>{rows}</ul></div>"
+    )
+
+
 def _generate_fallback_html(payload: dict[str, Any], findings: list[dict[str, Any]]) -> str:
     title = _esc(str(payload.get("title") or "Saved Comparison"))
     summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
@@ -774,7 +1003,7 @@ def _generate_fallback_html(payload: dict[str, Any], findings: list[dict[str, An
         changes = f.get("changes") or []
         change_html = "".join(f"<li>{_esc(str(c))}</li>" for c in changes) if changes else "<li>No changes recorded</li>"
         review = f.get("review") or {}
-        review_status = _esc(str(review.get("status") or "Pending Review"))
+        review_status = _esc(normalize_review_status(review.get("status") or "Pending Review"))
         notes = _esc(str(review.get("notes") or ""))
         rows += f"""
 <tr>

@@ -332,6 +332,42 @@ function New-Sha256File {
     return $checksumPath
 }
 
+function New-ReleaseManifest {
+    param(
+        [string]$Version,
+        [string]$ExePath,
+        [string]$InstallerPath,
+        [string]$ChecksumPath,
+        [bool]$Signed
+    )
+
+    $manifestPath = Join-Path (Split-Path -Parent $InstallerPath) "NovaGPOSetup_$Version.release.json"
+    $installerHash = (Get-FileHash -Path $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $payload = [ordered]@{
+        app = "Nova GPO"
+        version = $Version
+        generated_at = (Get-Date).ToString("o")
+        exe = [ordered]@{
+            path = $ExePath
+            sha256 = (Get-FileHash -Path $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            signed = $Signed
+        }
+        installer = [ordered]@{
+            path = $InstallerPath
+            file = (Split-Path -Path $InstallerPath -Leaf)
+            sha256 = $installerHash
+            checksum_file = (Split-Path -Path $ChecksumPath -Leaf)
+            signed = $Signed
+        }
+        github_release_assets = @(
+            (Split-Path -Path $InstallerPath -Leaf),
+            (Split-Path -Path $ChecksumPath -Leaf)
+        )
+    }
+    $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding UTF8
+    return $manifestPath
+}
+
 if ($Version) {
     Write-Host "Updating app version to $Version"
     Set-AppVersion -NewVersion $Version
@@ -410,6 +446,7 @@ else {
 
     Write-Host "Generating installer SHA-256 checksum"
     $ChecksumPath = New-Sha256File -Path $ExpectedInstaller
+    $ManifestPath = New-ReleaseManifest -Version $AppVersion -ExePath $ExePath -InstallerPath $ExpectedInstaller -ChecksumPath $ChecksumPath -Signed ([bool]$SigningPlan.Enabled)
 }
 
 Write-Host ""
@@ -424,6 +461,7 @@ else {
 if (-not $SkipInstaller) {
     Write-Host "Installer: $(Join-Path $InstallerPath "NovaGPOSetup_$AppVersion.exe")"
     Write-Host "Checksum: $ChecksumPath"
+    Write-Host "Manifest: $ManifestPath"
     Write-Host ""
-    Write-Host "Upload both the installer and checksum file to the GitHub release."
+    Write-Host "Upload the installer, checksum file, and release manifest to the GitHub release."
 }

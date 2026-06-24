@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from app.core.settings import APP_ROOT, USER_DATA_DIR
+from app.review_status import normalize_review_status
 
 
 REVIEW_DIR = USER_DATA_DIR / "Reviews"
@@ -39,7 +40,7 @@ def load_review_notes(backup_a_path: str, backup_b_path: str) -> dict[str, dict[
         if not isinstance(value, dict):
             continue
         # Migrate old field names (disposition/impact/note/points/owner/ticket → status/priority/notes)
-        review_status = str(value.get("status") or _migrate_disposition(value.get("disposition", "")))
+        review_status = normalize_review_status(value.get("status") or _migrate_disposition(value.get("disposition", "")))
         review_priority = str(value.get("priority") or _migrate_impact(value.get("impact", "")))
         review_notes = str(value.get("notes") or _merge_old_notes(value))
         clean[str(key)] = {
@@ -58,7 +59,7 @@ def load_review_notes(backup_a_path: str, backup_b_path: str) -> dict[str, dict[
 def _migrate_disposition(old: str) -> str:
     return {
         "Approved": "No Action Required",
-        "Needs Review": "Update Required",
+        "Needs Review": "Make Changes to A",
         "Risk Accepted": "No Action Required",
         "Rollback Candidate": "Escalated",
         "Not Reviewed": "Pending Review",

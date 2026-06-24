@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import zipfile
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -177,7 +178,7 @@ class ReportProfileTests(unittest.TestCase):
             diff,
             {
                 diff[0].key: {
-                    "status": "Update Required",
+                    "status": "Make Changes to A",
                     "priority": "High",
                     "notes": "Validate before rollout. Ticket CHG789.",
                 }
@@ -268,16 +269,76 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn('"remediation"', json_body)
         self.assertIn('"target": "Backup B"', json_body)
 
+    def test_remediation_updates_matching_setting_labels_instead_of_add_remove_noise(self) -> None:
+        policy_a = GpoReportPolicy(
+            scope="User Configuration",
+            name="OneDrive2",
+            state="Enabled",
+            category="Group Policy Preferences > Registry",
+            supported="",
+            explain="",
+            settings=[
+                GPP_PROPERTIES_HEADER,
+                "Action: Update",
+                ILT_HEADER,
+                "â€¢ Registry Match",
+                "  Type: Match value",
+                "  Value data: 1",
+            ],
+            policy_type="Preference",
+            source="gpreport.xml::Registry",
+            identity="fixture::preference::onedrive2",
+        )
+        policy_b = GpoReportPolicy(
+            scope=policy_a.scope,
+            name=policy_a.name,
+            state=policy_a.state,
+            category=policy_a.category,
+            supported="",
+            explain="",
+            settings=[
+                GPP_PROPERTIES_HEADER,
+                "Action: Update",
+                ILT_HEADER,
+                "â€¢ Registry Match",
+                "  Type: Match value",
+                "  Value data: ",
+            ],
+            policy_type=policy_a.policy_type,
+            source=policy_a.source,
+            identity=policy_a.identity,
+        )
+        diff = PolicyDiff(
+            status="Different",
+            key=policy_a.identity,
+            scope=policy_a.scope,
+            state_a=policy_a.state,
+            state_b=policy_b.state,
+            policy_a=policy_a,
+            policy_b=policy_b,
+        )
+
+        markdown = markdown_report("A", "B", [diff])
+        csv_body = csv_report("A", "B", [diff])
+
+        self.assertIn("Item-Level Targeting > Registry Match > Value data: set to '1'", markdown)
+        self.assertIn("Recommended Actions", csv_body)
+        self.assertIn("Review Summary", markdown)
+        self.assertIn("Compared Values", markdown)
+
     def test_reports_include_version_profile_and_review_totals(self) -> None:
         diff = _diff(name="Reviewed Policy")
-        html = html_report("A", "B", [diff], {diff.key: {"status": "Update Required"}}, profile="full")
-        markdown = markdown_report("A", "B", [diff], {diff.key: {"status": "Update Required"}}, profile="full")
+        html = html_report("A", "B", [diff], {diff.key: {"status": "Make Changes to A"}}, profile="full")
+        markdown = markdown_report("A", "B", [diff], {diff.key: {"status": "Make Changes to A"}}, profile="full")
+        json_body = json.loads(json_report("A", "B", [diff], {diff.key: {"status": "Update Required"}}))
 
         self.assertIn("Nova GPO", html)
         self.assertIn("Profile", html)
         self.assertIn("Reviewed", html)
         self.assertIn("App Version:", markdown)
         self.assertIn("1 actionable finding(s) have review status updates", markdown)
+        self.assertEqual(json_body["schema_version"], 2)
+        self.assertEqual(json_body["items"][0]["review"]["status"], "Make Changes to A")
 
     def test_write_report_bundle_creates_all_artifacts(self) -> None:
         with TemporaryDirectory() as tmp:

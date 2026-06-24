@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.core.log import get_logger
 from app.core.settings import APP_ROOT, save_settings
-from app.core.update_checker import check_for_updates
+from app.core.update_checker import check_for_updates, github_ssl_context
 from app.ui.branding import APP_LOGO_PATH, app_icon
 from app.ui.styles import THEME_LABELS, build_stylesheet
 from app.gpo.archive import archive_backup, restore_archived_backup
@@ -143,14 +143,8 @@ class _DownloadWorker(QObject):
 
     def run(self) -> None:
         try:
-            # Build an SSL context that works in both dev and frozen PyInstaller EXEs.
-            # Try the default context (uses system / certifi CAs) and fall back to
-            # unverified — acceptable here because we already validated the URL is
-            # from github.com / objects.githubusercontent.com.
-            try:
-                ssl_ctx = ssl.create_default_context()
-            except Exception:
-                ssl_ctx = ssl._create_unverified_context()
+            # Use the same verified GitHub SSL context as the release check.
+            ssl_ctx = github_ssl_context()
 
             req = urllib.request.Request(
                 self.url,

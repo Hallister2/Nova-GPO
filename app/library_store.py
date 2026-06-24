@@ -13,6 +13,8 @@ from typing import Any
 from app.core.settings import USER_DATA_DIR
 from app.gpo.comparison_model import PolicyDiff, setting_changes
 from app.reports.compare_report import actionable_items, json_report, markdown_report, html_report, remediation_steps
+from app.review_status import normalize_review_status
+from app import __version__
 
 
 def _rmtree(path: Path) -> None:
@@ -29,8 +31,8 @@ COMPARE_RECORD_NAME = "compare.json"
 COMPARE_INDEX_NAME = "index.json"
 COMPARE_HTML_NAME = "report.html"
 COMPARE_MARKDOWN_NAME = "report.md"
-COMPARE_SCHEMA_VERSION = 3
-COMPARE_APP_VERSION = "Nova GPO"
+COMPARE_SCHEMA_VERSION = 4
+COMPARE_APP_VERSION = __version__
 NON_ACTIONABLE_REVIEW_STATUSES = {"No Action Required"}
 
 
@@ -76,10 +78,12 @@ def save_compare_record(
 
     html_path = destination / COMPARE_HTML_NAME
     markdown_path = destination / COMPARE_MARKDOWN_NAME
+    json_path = destination / "report.json"
     record_path = destination / COMPARE_RECORD_NAME
 
     html_path.write_text(html_report, encoding="utf-8")
     markdown_path.write_text(markdown_report, encoding="utf-8")
+    json_path.write_text(json_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
 
     findings = [_item_payload(item, review_notes.get(item.key, {})) for item in actionable_items(diff_items)]
     inventory = [_item_payload(item, review_notes.get(item.key, {})) for item in diff_items]
@@ -97,6 +101,7 @@ def save_compare_record(
         "generated_artifacts": {
             "html": str(html_path),
             "markdown": str(markdown_path),
+            "json": str(json_path),
         },
         "summary": _summary(diff_items, review_notes),
         "diagnostics": _diagnostics(diff_items),
@@ -129,7 +134,7 @@ def _list_compare_records_from_payloads() -> list[CompareLibraryRecord]:
     for record_file in COMPARE_ARCHIVE_DIR.glob(f"*/{COMPARE_RECORD_NAME}"):
         payload = _read_record_payload(record_file)
         if payload:
-            if _repair_compare_payload_summary(payload):
+            if _migrate_compare_payload(payload, record_file):
                 _write_record_payload(record_file, payload)
             records.append(_record_from_payload(payload, record_file))
 
@@ -143,7 +148,7 @@ def repair_compare_record_summaries() -> int:
     repaired = 0
     for record_file in COMPARE_ARCHIVE_DIR.glob(f"*/{COMPARE_RECORD_NAME}"):
         payload = _read_record_payload(record_file)
-        if payload and _repair_compare_payload_summary(payload):
+        if payload and _migrate_compare_payload(payload, record_file):
             _write_record_payload(record_file, payload)
             repaired += 1
 
@@ -158,7 +163,106 @@ def load_compare_record_payload(record_path: str) -> dict[str, Any]:
     if not payload:
         raise FileNotFoundError(f"Could not read saved compare review: {record_path}")
     payload.setdefault("record_path", str(path))
+    if _migrate_compare_payload(payload, path):
+        _write_record_payload(path, payload)
+        _rebuild_compare_index()
     return payload
+
+
+def _migrate_compare_payload(payload: dict[str, Any], record_path: Path) -> bool:
+    changed = False
+    existing_version = _int(payload.get("schema_version"))
+    if existing_version != COMPARE_SCHEMA_VERSION:
+        if existing_version:
+            payload["migrated_from_schema_version"] = existing_version
+        payload["schema_version"] = COMPARE_SCHEMA_VERSION
+        changed = True
+
+    if payload.get("app_version") != COMPARE_APP_VERSION:
+        payload["app_version"] = COMPARE_APP_VERSION
+        changed = True
+
+    changed = _merge_report_json_payload(payload, record_path) or changed
+    changed = _normalize_payload_review_statuses(payload) or changed
+    changed = _repair_compare_payload_summary(payload) or changed
+
+    if changed:
+        payload["schema_migrated_at"] = datetime.now().isoformat(timespec="seconds")
+    return changed
+
+
+def _merge_report_json_payload(payload: dict[str, Any], record_path: Path) -> bool:
+    """Backfill rich policy details from report.json for older compare records."""
+    json_path = ""
+    artifacts = payload.get("generated_artifacts")
+    if isinstance(artifacts, dict):
+        json_path = str(artifacts.get("json") or "")
+    candidate = Path(json_path) if json_path else record_path.with_name("report.json")
+    if not candidate.exists():
+        return False
+
+    report_payload = _read_record_payload(candidate)
+    if not report_payload:
+        return False
+
+    report_items = report_payload.get("items")
+    if not isinstance(report_items, list):
+        return False
+
+    by_key = {
+        str(item.get("key", "")): item
+        for item in report_items
+        if isinstance(item, dict) and item.get("key")
+    }
+    if not by_key:
+        return False
+
+    changed = False
+    for collection_name in ("items", "findings", "inventory"):
+        items = payload.get(collection_name)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", ""))
+            rich = by_key.get(key)
+            if not rich:
+                continue
+            review = item.get("review")
+            for merge_key in (
+                "policy_a",
+                "policy_b",
+                "review_summary",
+                "remediation",
+                "supporting_evidence",
+                "changes",
+                "risk",
+            ):
+                if merge_key in rich and (merge_key not in item or item.get(merge_key) != rich[merge_key]):
+                    item[merge_key] = rich[merge_key]
+                    changed = True
+            if isinstance(review, dict):
+                item["review"] = review
+    return changed
+
+
+def _normalize_payload_review_statuses(payload: dict[str, Any]) -> bool:
+    changed = False
+    for collection_name in ("items", "findings", "inventory"):
+        items = payload.get(collection_name)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            review = item.get("review")
+            if isinstance(review, dict):
+                normalized = normalize_review_status(review.get("status", "Pending Review"))
+                if review.get("status") != normalized:
+                    review["status"] = normalized
+                    changed = True
+    return changed
 
 
 def update_compare_record_reviews(record_path: str, reviews: dict[str, dict[str, str]]) -> None:
@@ -179,10 +283,13 @@ def update_compare_record_reviews(record_path: str, reviews: dict[str, dict[str,
                 continue
             key = str(item.get("key", ""))
             if key in reviews:
-                item["review"] = reviews[key]
+                item["review"] = {
+                    **reviews[key],
+                    "status": normalize_review_status(reviews[key].get("status", "Pending Review")),
+                }
                 changed = True
 
-    changed = _repair_compare_payload_summary(payload) or changed
+    changed = _migrate_compare_payload(payload, path) or changed
 
     if changed:
         _write_record_payload(path, payload)
@@ -346,7 +453,7 @@ def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
         ],
         "supporting_evidence": list(item.supporting_evidence),
         "review": {
-            "status": review.get("status", "Pending Review"),
+            "status": normalize_review_status(review.get("status", "Pending Review")),
             "priority": review.get("priority", "Normal"),
             "owner": review.get("owner", ""),
             "ticket": review.get("ticket", ""),
@@ -370,7 +477,7 @@ def _reviews_from_payload(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
             review = item.get("review", {})
             if key and isinstance(review, dict):
                 reviews[key] = {
-                    "status": str(review.get("status", "Pending Review")),
+                    "status": normalize_review_status(review.get("status", "Pending Review")),
                     "priority": str(review.get("priority", "Normal")),
                     "owner": str(review.get("owner", "")),
                     "ticket": str(review.get("ticket", "")),
@@ -383,7 +490,7 @@ def _reviews_from_payload(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
 
 def _review_has_content(note: dict[str, str]) -> bool:
     return (
-        note.get("status", "Pending Review") != "Pending Review"
+        normalize_review_status(note.get("status", "Pending Review")) != "Pending Review"
         or note.get("priority", "Normal") != "Normal"
         or bool(note.get("owner", "").strip())
         or bool(note.get("ticket", "").strip())
@@ -396,11 +503,11 @@ def _review_has_content(note: dict[str, str]) -> bool:
 
 
 def _review_status_is_actionable(note: dict[str, str]) -> bool:
-    return note.get("status", "Pending Review") not in NON_ACTIONABLE_REVIEW_STATUSES
+    return normalize_review_status(note.get("status", "Pending Review")) not in NON_ACTIONABLE_REVIEW_STATUSES
 
 
 def _review_status_is_ignored(note: dict[str, str]) -> bool:
-    return note.get("status", "Pending Review") in NON_ACTIONABLE_REVIEW_STATUSES
+    return normalize_review_status(note.get("status", "Pending Review")) in NON_ACTIONABLE_REVIEW_STATUSES
 
 
 def _payload_item_is_actionable(item: dict[str, Any]) -> bool:

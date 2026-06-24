@@ -39,23 +39,13 @@ from app.gpo.comparison_model import (
     summarize_diffs,
 )
 
-_REVIEW_STATUSES = [
-    "Pending Review",
-    "Add Policy to Align",
-    "Add Setting to Align",
-    "Remove Setting to Align",
-    "Update Setting to Align",
-    "Under Investigation",
-    "Escalated",
-    "No Action Required",
-]
-
 _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
 from app.gpo.gpo_model import GpoBackup
 from app.gpo.gpreport_parser import load_gpreport
 from app.library_store import NON_ACTIONABLE_REVIEW_STATUSES, save_compare_record
 from app.reports.compare_report import html_report, json_report, markdown_report, write_report_bundle
 from app.reports.insights import parser_diagnostics, risk_counts
+from app.review_status import REVIEW_STATUSES, normalize_review_status
 from app.review_store import load_review_notes, save_review_notes
 from app.ui.widgets import badge
 
@@ -351,7 +341,7 @@ class CompareWindow(QDialog):
         self.review_filter.clear()
         secondary_statuses = [
             status
-            for status in _REVIEW_STATUSES
+            for status in REVIEW_STATUSES
             if status not in {"Pending Review", "No Action Required"}
         ]
         self.review_filter.addItems(
@@ -505,7 +495,7 @@ class CompareWindow(QDialog):
         name_label.setWordWrap(True)
         name_label.setToolTip(policy_name)
 
-        review_status = self.review_notes.get(item.key, {}).get("status", "Pending Review")
+        review_status = normalize_review_status(self.review_notes.get(item.key, {}).get("status", "Pending Review"))
         review_badge = badge(review_status, _review_badge_state(review_status), min_width=128, parent=header_frame)
         review_badge.setVisible(review_status != "Pending Review")
         self._review_badges[item.key] = review_badge
@@ -739,8 +729,8 @@ class CompareWindow(QDialog):
         review = self._review_for_item(item)
 
         row_status = QComboBox(right)
-        row_status.addItems(_REVIEW_STATUSES)
-        row_status.setCurrentText(review.get("status", "Pending Review"))
+        row_status.addItems(REVIEW_STATUSES)
+        row_status.setCurrentText(normalize_review_status(review.get("status", "Pending Review")))
 
         row_priority = QComboBox(right)
         row_priority.addItems(_REVIEW_PRIORITIES)
@@ -1053,7 +1043,7 @@ class CompareWindow(QDialog):
 
         review = self._review_for_item(item)
         self.review_status.setEnabled(True)
-        self.review_status.setCurrentText(review.get("status", "Pending Review"))
+        self.review_status.setCurrentText(normalize_review_status(review.get("status", "Pending Review")))
         if self.review_priority is not None:
             self.review_priority.setEnabled(True)
             self.review_priority.setCurrentText(review.get("priority", "Normal"))
@@ -1149,7 +1139,7 @@ class CompareWindow(QDialog):
 
     def _mark_all_as(self) -> None:
         menu = QMenu(self)
-        for status in _REVIEW_STATUSES[1:]:
+        for status in REVIEW_STATUSES[1:]:
             action = menu.addAction(status)
             action.triggered.connect(
                 lambda checked=False, d=status: self._apply_bulk_review(d)
@@ -1160,7 +1150,7 @@ class CompareWindow(QDialog):
         updated_keys: set[str] = set()
         for item in self.filtered_items:
             review = self._review_for_item(item)
-            if review.get("status", "Pending Review") != "Pending Review":
+            if normalize_review_status(review.get("status", "Pending Review")) != "Pending Review":
                 continue
             review["status"] = status
             review["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -1227,10 +1217,10 @@ def _policy_type(item: PolicyDiff) -> str:
 def _review_badge_state(status: str) -> str:
     return {
         "No Action Required":      "valid",
-        "Add Policy to Align":     "added",
-        "Add Setting to Align":    "added",
-        "Remove Setting to Align": "removed",
-        "Update Setting to Align": "review",
+        "Make Changes to A":       "added",
+        "Make Changes to B":       "added",
+        "Remove From A":           "removed",
+        "Remove From B":           "removed",
         "Under Investigation":     "unknown",
         "Escalated":               "removed",
     }.get(status, "empty")
@@ -1289,7 +1279,7 @@ def _review_summary_rows(item: PolicyDiff, review: dict[str, str]) -> list[tuple
         ("Targeting", targeting),
         ("Action", action),
         ("Impact", impact),
-        ("Review", review.get("status", "Pending Review") or "Pending Review"),
+        ("Review", normalize_review_status(review.get("status", "Pending Review"))),
     ]
 
 

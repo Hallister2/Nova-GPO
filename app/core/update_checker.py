@@ -159,6 +159,11 @@ def _github_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
+def github_ssl_context() -> ssl.SSLContext:
+    """Build the SSL context used for GitHub release checks and downloads."""
+    return _github_ssl_context()
+
+
 def _format_url_error(error: URLError) -> str:
     reason = getattr(error, "reason", error)
     if _is_certificate_error(reason):

@@ -316,7 +316,7 @@ class ViewWindow(QDialog):
 
         detail_panel = QFrame()
         detail_panel.setObjectName("Panel")
-        detail_panel.setMinimumWidth(300)
+        detail_panel.setMinimumWidth(420)
 
         detail_layout = QVBoxLayout(detail_panel)
         detail_layout.setContentsMargins(16, 16, 16, 16)
@@ -509,7 +509,7 @@ class ViewWindow(QDialog):
         content.addWidget(detail_panel)
         content.setStretchFactor(0, 3)
         content.setStretchFactor(1, 2)
-        content.setSizes([680, 360])
+        content.setSizes([720, 520])
 
         layout.addWidget(content, 1)
 
@@ -939,8 +939,8 @@ def _policy_detail_html(policy: GpoReportPolicy) -> str:
 
 def _detail_html_section(title: str, body: str) -> str:
     return (
-        "<section style='margin:0 0 14px 0;'>"
-        f"<h3 style='font-size:13px; margin:0 0 7px 0; text-transform:uppercase; letter-spacing:0.4px;'>{escape(title)}</h3>"
+        "<section style='margin:0 0 14px 0; padding:10px 12px; border:1px solid rgba(255,255,255,0.08); border-radius:6px;'>"
+        f"<h3 style='font-size:12px; margin:0 0 8px 0; text-transform:uppercase; letter-spacing:0.4px; color:#FF8A1F;'>{escape(title)}</h3>"
         f"{body}"
         "</section>"
     )
@@ -995,10 +995,11 @@ def _settings_table_html(settings: list[str], targeting: bool = False) -> str:
 
 
 def _split_setting_pair(setting: str) -> tuple[str, str]:
-    if ":" not in setting:
-        return "", setting
-    key, value = setting.split(":", 1)
-    return key.strip(), value.strip()
+    clean = setting.strip().lstrip("•").lstrip("â€¢").strip().replace("::", ":")
+    if ":" not in clean:
+        return "", clean
+    key, value = clean.split(":", 1)
+    return key.strip(), value.strip().lstrip(":").strip()
 
 
 def _detail_field(label_text: str, value: QLabel) -> QFrame:

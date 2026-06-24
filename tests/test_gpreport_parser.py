@@ -74,14 +74,14 @@ class GpoReportParserTests(unittest.TestCase):
             diff_items[:1],
             {
                 diff_items[0].key: {
-                    "status": "Update Required",
+                    "status": "Make Changes to A",
                     "priority": "High",
                     "notes": "Validate before rollout. CHG456.",
                 }
             },
         )
 
-        self.assertIn("- Review Status: Update Required", report)
+        self.assertIn("- Review Status: Make Changes to A", report)
         self.assertIn("- Priority: High", report)
         self.assertIn("CHG456", report)
 
