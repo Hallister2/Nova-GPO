@@ -48,7 +48,7 @@ from app.gpo.archive import archive_backup, restore_archived_backup
 from app.gpo.backup_catalog import BackupCatalogItem, scan_backup_library
 from app.gpo.backup_loader import load_gpo_backup
 from app.gpo.scan_cache import display_scan_time, load_scan_cache, save_scan_cache
-from app.library_store import delete_compare_record, list_compare_records, rename_compare_record
+from app.library_store import delete_compare_record, list_compare_records, regenerate_compare_record, rename_compare_record
 from app.ui.pages.dashboard_page import DashboardPage
 from app.ui.pages.home_page import HomePage
 from app.ui.pages.reports_page import ReportsPage
@@ -432,6 +432,7 @@ class MainWindow(QMainWindow):
         self.reports_page.open_compare_archive_requested.connect(self._open_compare_archive)
         self.reports_page.delete_compare_archive_requested.connect(self._delete_compare_archive)
         self.reports_page.rename_compare_archive_requested.connect(self._rename_compare_archive)
+        self.reports_page.regenerate_compare_archive_requested.connect(self._regenerate_compare_archive)
         self.reports_page.backup_library_requested.connect(lambda: self._set_page("Backup Library"))
 
         # Settings
@@ -866,6 +867,25 @@ class MainWindow(QMainWindow):
             return
 
         self._refresh_compare_records()
+
+    def _regenerate_compare_archive(self, record_path: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Regenerate Report",
+            "Regenerate this saved report from the original backup folders using the current report generator?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            regenerate_compare_record(record_path)
+        except Exception as error:
+            QMessageBox.critical(self, "Regenerate Failed", str(error))
+            return
+
+        self._refresh_compare_records()
+        self._toast.success("Saved report regenerated.")
 
     def _handle_compare_from_view(self, backup_path: str, view_window) -> None:
         view_window.accept()

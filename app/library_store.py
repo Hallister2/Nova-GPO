@@ -12,7 +12,7 @@ from typing import Any
 
 from app.core.settings import USER_DATA_DIR
 from app.gpo.comparison_model import PolicyDiff, setting_changes
-from app.reports.compare_report import actionable_items
+from app.reports.compare_report import actionable_items, json_report, markdown_report, html_report, remediation_steps
 
 
 def _rmtree(path: Path) -> None:
@@ -203,6 +203,76 @@ def rename_compare_record(record_path: str, new_title: str) -> None:
     _rebuild_compare_index()
 
 
+def regenerate_compare_record(record_path: str) -> CompareLibraryRecord:
+    path = Path(record_path)
+    if path.is_dir():
+        path = path / COMPARE_RECORD_NAME
+    if not path.exists():
+        raise FileNotFoundError(f"Compare record not found: {record_path}")
+
+    payload = _read_record_payload(path)
+    if not payload:
+        raise ValueError(f"Could not read compare record: {record_path}")
+
+    backup_a = payload.get("backup_a", {}) if isinstance(payload.get("backup_a"), dict) else {}
+    backup_b = payload.get("backup_b", {}) if isinstance(payload.get("backup_b"), dict) else {}
+    title_a = str(backup_a.get("title") or "Backup A")
+    title_b = str(backup_b.get("title") or "Backup B")
+    backup_a_path = str(backup_a.get("path") or "")
+    backup_b_path = str(backup_b.get("path") or "")
+
+    missing = [
+        label for label, backup_path in (("Backup A", backup_a_path), ("Backup B", backup_b_path))
+        if not backup_path or not Path(backup_path).exists()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "Cannot regenerate because source backup folder(s) are missing: "
+            + ", ".join(missing)
+        )
+
+    from app.gpo.backup_loader import load_gpo_backup
+    from app.gpo.gpreport_parser import load_gpreport
+    from app.gpo.comparison_model import build_backup_diff
+
+    backup_a_model = load_gpo_backup(backup_a_path)
+    backup_b_model = load_gpo_backup(backup_b_path)
+    report_a = load_gpreport(backup_a_path)
+    report_b = load_gpreport(backup_b_path)
+    diff_items = build_backup_diff(backup_a_model, backup_b_model, report_a, report_b)
+    review_notes = _reviews_from_payload(payload)
+
+    html_path = Path(str(payload.get("html_path") or path.with_name(COMPARE_HTML_NAME)))
+    markdown_path = Path(str(payload.get("markdown_path") or path.with_name(COMPARE_MARKDOWN_NAME)))
+    json_path = path.with_name("report.json")
+
+    html_path.write_text(html_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
+    markdown_path.write_text(markdown_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
+    json_path.write_text(json_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
+
+    findings = [_item_payload(item, review_notes.get(item.key, {})) for item in actionable_items(diff_items)]
+    inventory = [_item_payload(item, review_notes.get(item.key, {})) for item in diff_items]
+
+    payload["app_version"] = COMPARE_APP_VERSION
+    payload["regenerated_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["html_path"] = str(html_path)
+    payload["markdown_path"] = str(markdown_path)
+    payload["generated_artifacts"] = {
+        "html": str(html_path),
+        "markdown": str(markdown_path),
+        "json": str(json_path),
+    }
+    payload["summary"] = _summary(diff_items, review_notes)
+    payload["diagnostics"] = _diagnostics(diff_items)
+    payload["items"] = findings
+    payload["findings"] = findings
+    payload["inventory"] = inventory
+
+    _write_record_payload(path, payload)
+    _rebuild_compare_index()
+    return _record_from_payload(payload, path)
+
+
 def delete_compare_record(record_path: str) -> None:
     path = Path(record_path)
     if path.name == COMPARE_RECORD_NAME:
@@ -270,6 +340,10 @@ def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
         "state_a": item.state_a,
         "state_b": item.state_b,
         "changes": setting_changes(item),
+        "remediation": [
+            {"action": action, "target": target, "detail": detail}
+            for action, target, detail in remediation_steps(item)
+        ],
         "supporting_evidence": list(item.supporting_evidence),
         "review": {
             "status": review.get("status", "Pending Review"),
@@ -281,6 +355,30 @@ def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
             "updated_at": review.get("updated_at", ""),
         },
     }
+
+
+def _reviews_from_payload(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+    reviews: dict[str, dict[str, str]] = {}
+    for collection_name in ("inventory", "findings", "items"):
+        items = payload.get(collection_name)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", ""))
+            review = item.get("review", {})
+            if key and isinstance(review, dict):
+                reviews[key] = {
+                    "status": str(review.get("status", "Pending Review")),
+                    "priority": str(review.get("priority", "Normal")),
+                    "owner": str(review.get("owner", "")),
+                    "ticket": str(review.get("ticket", "")),
+                    "tags": str(review.get("tags", "")),
+                    "notes": str(review.get("notes", "")),
+                    "updated_at": str(review.get("updated_at", "")),
+                }
+    return reviews
 
 
 def _review_has_content(note: dict[str, str]) -> bool:

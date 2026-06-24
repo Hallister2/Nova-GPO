@@ -153,6 +153,14 @@ def markdown_report(
         for change in setting_changes(item):
             report.append(f"- {change}")
 
+        remediation = remediation_steps(item)
+        if remediation:
+            report.append("")
+            report.append("### Remediation")
+            report.append("")
+            for action, target, detail in remediation:
+                report.append(f"- **{action} {target}:** {detail}")
+
         if item.supporting_evidence:
             report.append("")
             report.append("### Supporting Evidence")
@@ -243,6 +251,10 @@ def html_report(
     .strip-cell:last-child{{border-right:0}}
     .strip-cell span{{display:block;color:#9aa0a6;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:2px}}
     .delta{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:3px solid #ff8a1f;padding:10px 12px;margin:6px 0 14px;border-radius:0 4px 4px 0}}
+    .remediation{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:3px solid #82b6ff;padding:10px 12px;margin:6px 0 14px;border-radius:0 4px 4px 0}}
+    .remediation td{{font-size:12px;vertical-align:top}}
+    .remediation-action{{width:110px;color:#82b6ff;font-weight:800;text-transform:uppercase;letter-spacing:.03em}}
+    .remediation-target{{width:100px;color:#c0c3c7;font-weight:700}}
     .compare-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}}
     .side-card{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:4px solid #9aa0a6;border-radius:6px;padding:10px 12px}}
     .side-card.b{{border-left-color:#ff8a1f}}
@@ -320,6 +332,7 @@ def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> 
 
     attr_html = "".join(f'<div class="attr"><strong>{escape(k)}:</strong> {escape(v)}</div>' for k, v in attrs)
     changes_html = "".join(f"<li>{escape(c)}</li>" for c in changes)
+    remediation_html = _remediation_html(item)
 
     note_html = _review_html(review)
     evidence_html = _evidence_html(item.supporting_evidence)
@@ -340,6 +353,7 @@ def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> 
     <div class="delta">
       <ul>{changes_html}</ul>
     </div>
+    {remediation_html}
     <p class="section-title">Compared Values</p>
     <div class="compare-grid">
       {_side_card_html("Backup A", item.policy_a, "Not present in Backup A.", "a")}
@@ -350,6 +364,128 @@ def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> 
   </div>
 </div>
 """
+
+
+def remediation_steps(item: PolicyDiff) -> list[tuple[str, str, str]]:
+    """Return concrete remediation rows as (action, target, detail)."""
+    if item.policy_a is None and item.policy_b is not None:
+        return _create_policy_steps("Backup A", "Backup B", item.policy_b) + [
+            ("Remove", "Backup B", "Alternative: remove this policy/item from Backup B if Backup A is the desired baseline."),
+        ]
+
+    if item.policy_a is not None and item.policy_b is None:
+        return _create_policy_steps("Backup B", "Backup A", item.policy_a) + [
+            ("Remove", "Backup A", "Alternative: remove this policy/item from Backup A if Backup B is the desired baseline."),
+        ]
+
+    if item.policy_a is None or item.policy_b is None:
+        return [("Review", "Both", "No comparable policy details are available. Review the source backups manually.")]
+
+    steps: list[tuple[str, str, str]] = []
+    steps.extend(_update_policy_steps("Backup B", "Backup A", item.policy_b, item.policy_a))
+    steps.extend(_update_policy_steps("Backup A", "Backup B", item.policy_a, item.policy_b))
+    if not steps:
+        steps.append(("Review", "Both", "No exact setting-level remediation was generated. Review metadata, formatting, or unsupported parser detail."))
+    return steps
+
+
+def _create_policy_steps(target_label: str, source_label: str, source_policy) -> list[tuple[str, str, str]]:
+    steps = [
+        (
+            "Create",
+            target_label,
+            f"Create/recreate '{source_policy.name}' under {source_policy.scope} > {source_policy.category or 'Not reported'} using {source_label} as the source.",
+        ),
+        ("Set", target_label, f"State: {source_policy.state or 'Not configured'}"),
+    ]
+    for detail in _policy_setting_details(source_policy):
+        steps.append(("Set", target_label, detail))
+    return steps
+
+
+def _update_policy_steps(target_label: str, source_label: str, target_policy, source_policy) -> list[tuple[str, str, str]]:
+    steps: list[tuple[str, str, str]] = []
+    if target_policy is None or source_policy is None:
+        return steps
+
+    if _norm_text(target_policy.state) != _norm_text(source_policy.state):
+        steps.append(("Update", target_label, f"Set state to '{source_policy.state or 'Not configured'}' to match {source_label}."))
+
+    target_settings = {_norm_text(setting): setting for setting in target_policy.settings}
+    source_settings = {_norm_text(setting): setting for setting in source_policy.settings}
+
+    for key in sorted(set(source_settings) - set(target_settings)):
+        setting = source_settings[key]
+        if _is_section_header(setting):
+            continue
+        steps.append(("Add/Update", target_label, f"{_setting_context(setting)} to match {source_label}: {_clean_setting(setting)}"))
+
+    for key in sorted(set(target_settings) - set(source_settings)):
+        setting = target_settings[key]
+        if _is_section_header(setting):
+            continue
+        steps.append(("Remove", target_label, f"{_setting_context(setting)} not present in {source_label}: {_clean_setting(setting)}"))
+
+    return steps
+
+
+def _policy_setting_details(policy) -> list[str]:
+    details: list[str] = []
+    current = "Properties"
+    for setting in policy.settings or []:
+        if setting == GPP_PROPERTIES_HEADER:
+            current = "Properties"
+            continue
+        if setting == GPP_COMMON_HEADER:
+            current = "Common Options"
+            continue
+        if setting == ILT_HEADER:
+            current = "Item-Level Targeting"
+            continue
+        clean = _clean_setting(setting)
+        if clean:
+            details.append(f"{current}: {clean}")
+    return details
+
+
+def _setting_context(setting: str) -> str:
+    raw = setting
+    clean = setting.strip()
+    if clean.startswith("•") or clean.startswith("â€¢"):
+        return "Item-Level Targeting rule"
+    if raw.startswith("  "):
+        return "Item-Level Targeting attribute"
+    return "Setting"
+
+
+def _clean_setting(setting: str) -> str:
+    return setting.strip().lstrip("•").lstrip("â€¢").strip()
+
+
+def _is_section_header(setting: str) -> bool:
+    return setting in {GPP_PROPERTIES_HEADER, GPP_COMMON_HEADER, ILT_HEADER}
+
+
+def _norm_text(value: str) -> str:
+    return " ".join((value or "").casefold().split())
+
+
+def _remediation_html(item: PolicyDiff) -> str:
+    steps = remediation_steps(item)
+    if not steps:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td class="remediation-action">{escape(action)}</td>'
+        f'<td class="remediation-target">{escape(target)}</td>'
+        f"<td>{escape(detail)}</td>"
+        "</tr>"
+        for action, target, detail in steps
+    )
+    return (
+        '<p class="section-title">Remediation</p>'
+        f'<div class="remediation"><table><tbody>{rows}</tbody></table></div>'
+    )
 
 
 def _policy_type(item: PolicyDiff) -> str:
@@ -535,6 +671,10 @@ def json_report(
             "state_a": item.state_a,
             "state_b": item.state_b,
             "changes": setting_changes(item),
+            "remediation": [
+                {"action": action, "target": target, "detail": detail}
+                for action, target, detail in remediation_steps(item)
+            ],
             "risk": risk_tag(item),
             "supporting_evidence": list(item.supporting_evidence),
             "policy_a": _policy_dict(item.policy_a),

@@ -9,7 +9,7 @@ from app.gpo.backup_loader import load_gpo_backup
 from app.gpo.comparison_model import PolicyDiff
 from app.gpo.gpreport_parser import GpoReportPolicy, load_gpreport
 from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
-from app.reports.compare_report import csv_report, html_report, markdown_report, write_report_bundle
+from app.reports.compare_report import csv_report, html_report, json_report, markdown_report, write_report_bundle
 
 
 def _policy(policy_type: str = "Administrative Template", name: str = "Example Policy") -> GpoReportPolicy:
@@ -232,6 +232,41 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Targeting Information", report)
         self.assertIn("ilt-card", report)
         self.assertIn("Value name", report)
+
+    def test_reports_include_remediation_steps(self) -> None:
+        policy_a = _policy(name="Storage Sense")
+        policy_b = GpoReportPolicy(
+            scope=policy_a.scope,
+            name=policy_a.name,
+            state="Disabled",
+            category=policy_a.category,
+            supported="",
+            explain="",
+            settings=["Value: Disabled", "New value: 1"],
+            policy_type=policy_a.policy_type,
+            source=policy_a.source,
+            identity=policy_a.identity,
+        )
+        diff = PolicyDiff(
+            status="Different",
+            key=policy_a.identity,
+            scope=policy_a.scope,
+            state_a=policy_a.state,
+            state_b=policy_b.state,
+            policy_a=policy_a,
+            policy_b=policy_b,
+        )
+
+        html = html_report("A", "B", [diff])
+        markdown = markdown_report("A", "B", [diff])
+        json_body = json_report("A", "B", [diff])
+
+        self.assertIn("Remediation", html)
+        self.assertIn("Add/Update", html)
+        self.assertIn("### Remediation", markdown)
+        self.assertIn("Set state to", markdown)
+        self.assertIn('"remediation"', json_body)
+        self.assertIn('"target": "Backup B"', json_body)
 
     def test_reports_include_version_profile_and_review_totals(self) -> None:
         diff = _diff(name="Reviewed Policy")

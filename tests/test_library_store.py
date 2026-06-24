@@ -4,6 +4,7 @@ import unittest
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import app.library_store as library_store
 from app.gpo.comparison_model import PolicyDiff
@@ -229,6 +230,51 @@ class TestCompareLibraryStore(unittest.TestCase):
                 self.assertEqual(records[0].ignored, 1)
                 self.assertEqual(repaired["summary"]["actionable"], 1)
                 self.assertEqual(repaired["summary"]["ignored"], 1)
+            finally:
+                library_store.COMPARE_ARCHIVE_DIR = original_dir
+
+    def test_regenerate_compare_record_rebuilds_reports_when_sources_exist(self) -> None:
+        with TemporaryDirectory() as root:
+            original_dir = library_store.COMPARE_ARCHIVE_DIR
+            library_store.COMPARE_ARCHIVE_DIR = Path(root) / "library" / "compares"
+            try:
+                backup_a = Path(root) / "backup-a"
+                backup_b = Path(root) / "backup-b"
+                backup_a.mkdir()
+                backup_b.mkdir()
+                diff = _diff("Changed Policy")
+
+                record = library_store.save_compare_record(
+                    title_a="Baseline",
+                    title_b="Candidate",
+                    backup_a_path=str(backup_a),
+                    backup_b_path=str(backup_b),
+                    diff_items=[diff],
+                    review_notes={
+                        diff.key: {
+                            "status": "No Action Required",
+                            "priority": "Normal",
+                            "notes": "Reviewed.",
+                        }
+                    },
+                    html_report="<html>old report</html>",
+                    markdown_report="# old report",
+                )
+
+                with patch("app.gpo.backup_loader.load_gpo_backup", side_effect=lambda path: path), \
+                     patch("app.gpo.gpreport_parser.load_gpreport", return_value=None), \
+                     patch("app.gpo.comparison_model.build_backup_diff", return_value=[diff]):
+                    refreshed = library_store.regenerate_compare_record(record.record_path)
+
+                payload = library_store.load_compare_record_payload(record.record_path)
+                html = Path(refreshed.html_path).read_text(encoding="utf-8")
+                markdown = Path(refreshed.markdown_path).read_text(encoding="utf-8")
+
+                self.assertIn("Remediation", html)
+                self.assertIn("### Remediation", markdown)
+                self.assertIn("regenerated_at", payload)
+                self.assertEqual(payload["findings"][0]["review"]["status"], "No Action Required")
+                self.assertTrue(Path(record.record_path).with_name("report.json").exists())
             finally:
                 library_store.COMPARE_ARCHIVE_DIR = original_dir
 

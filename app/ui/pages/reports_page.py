@@ -30,6 +30,7 @@ class ReportsPage(QWidget):
     open_compare_archive_requested = Signal(str)
     delete_compare_archive_requested = Signal(str)
     rename_compare_archive_requested = Signal(str, str)   # record_path, new_title
+    regenerate_compare_archive_requested = Signal(str)
     backup_library_requested = Signal()
 
     def __init__(
@@ -211,6 +212,16 @@ class ReportsPage(QWidget):
         open_btn.setObjectName("PrimaryButton")
         open_btn.clicked.connect(lambda: self.open_compare_archive_requested.emit(record.record_path))
 
+        regenerate_btn = QPushButton("Regenerate")
+        regenerate_btn.setObjectName("GhostButton")
+        regenerate_btn.setEnabled(record.source_status == "Sources available")
+        regenerate_btn.setToolTip(
+            "Rebuild report files from the current report generator."
+            if record.source_status == "Sources available"
+            else "Both original backup folders must still exist to regenerate this report."
+        )
+        regenerate_btn.clicked.connect(lambda: self.regenerate_compare_archive_requested.emit(record.record_path))
+
         rename_btn = QPushButton("Rename")
         rename_btn.setObjectName("GhostButton")
         rename_btn.clicked.connect(lambda: self._rename_record(record))
@@ -221,6 +232,7 @@ class ReportsPage(QWidget):
 
         top.addWidget(title_lbl, 1)
         top.addWidget(open_btn)
+        top.addWidget(regenerate_btn)
         top.addWidget(rename_btn)
         top.addWidget(delete_btn)
         outer.addLayout(top)
