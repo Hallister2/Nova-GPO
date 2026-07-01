@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -29,9 +30,11 @@ class ReportsPage(QWidget):
     compare_backups_requested = Signal(str, str)
     open_compare_archive_requested = Signal(str)
     export_compare_archive_html_requested = Signal(str)
+    export_compare_archives_html_requested = Signal(list)
     delete_compare_archive_requested = Signal(str)
     rename_compare_archive_requested = Signal(str, str)   # record_path, new_title
     regenerate_compare_archive_requested = Signal(str)
+    regenerate_compare_archives_requested = Signal(list)
     backup_library_requested = Signal()
 
     def __init__(
@@ -47,6 +50,7 @@ class ReportsPage(QWidget):
         self._get_selected_paths = get_selected_paths
         self._compare_records: list[CompareLibraryRecord] = []
         self._report_filter: str = ""
+        self._selected_record_paths: set[str] = set()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 22)
@@ -60,6 +64,8 @@ class ReportsPage(QWidget):
 
     def populate_compare_records(self, records: list[CompareLibraryRecord]) -> None:
         self._compare_records = records
+        valid_paths = {record.record_path for record in records}
+        self._selected_record_paths.intersection_update(valid_paths)
         self._rebuild_stats()
         self._rebuild_cards()
 
@@ -119,6 +125,7 @@ class ReportsPage(QWidget):
         self._report_search.textChanged.connect(self._on_report_filter_changed)
         filter_row.addWidget(self._report_search, 1)
         layout.addLayout(filter_row)
+        layout.addLayout(self._build_bulk_toolbar())
 
         self._cards_scroll = QScrollArea()
         self._cards_scroll.setWidgetResizable(True)
@@ -137,9 +144,89 @@ class ReportsPage(QWidget):
         self._rebuild_cards()
         return container
 
+    def _build_bulk_toolbar(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self._selection_summary = QLabel("0 selected")
+        self._selection_summary.setObjectName("Muted")
+
+        select_visible_btn = QPushButton("Select All")
+        select_visible_btn.setObjectName("GhostButton")
+        select_visible_btn.clicked.connect(self._select_visible_records)
+
+        clear_btn = QPushButton("Clear Selection")
+        clear_btn.setObjectName("GhostButton")
+        clear_btn.clicked.connect(self._clear_selection)
+
+        self._export_selected_btn = QPushButton("Export Selected")
+        self._export_selected_btn.setObjectName("GhostButton")
+        self._export_selected_btn.clicked.connect(self._export_selected_records)
+
+        self._regenerate_selected_btn = QPushButton("Regenerate Selected")
+        self._regenerate_selected_btn.setObjectName("GhostButton")
+        self._regenerate_selected_btn.clicked.connect(self._regenerate_selected_records)
+
+        row.addWidget(self._selection_summary)
+        row.addStretch()
+        row.addWidget(select_visible_btn)
+        row.addWidget(clear_btn)
+        row.addWidget(self._export_selected_btn)
+        row.addWidget(self._regenerate_selected_btn)
+        return row
+
     def _on_report_filter_changed(self, text: str) -> None:
         self._report_filter = text.strip().lower()
         self._rebuild_cards()
+
+    def _visible_records(self) -> list[CompareLibraryRecord]:
+        q = self._report_filter
+        return [
+            r for r in self._compare_records
+            if not q or q in r.title.lower()
+            or q in r.backup_a_title.lower()
+            or q in r.backup_b_title.lower()
+        ] if self._compare_records else []
+
+    def _selected_paths(self) -> list[str]:
+        visible_paths = {record.record_path for record in self._compare_records}
+        return [
+            record.record_path
+            for record in self._compare_records
+            if record.record_path in self._selected_record_paths and record.record_path in visible_paths
+        ]
+
+    def _update_bulk_toolbar(self) -> None:
+        selected = self._selected_paths()
+        self._selection_summary.setText(f"{len(selected)} selected")
+        self._export_selected_btn.setEnabled(bool(selected))
+        self._regenerate_selected_btn.setEnabled(bool(selected))
+
+    def _select_visible_records(self) -> None:
+        for record in self._visible_records():
+            self._selected_record_paths.add(record.record_path)
+        self._rebuild_cards()
+
+    def _clear_selection(self) -> None:
+        self._selected_record_paths.clear()
+        self._rebuild_cards()
+
+    def _on_record_selection_changed(self, record_path: str, checked: bool) -> None:
+        if checked:
+            self._selected_record_paths.add(record_path)
+        else:
+            self._selected_record_paths.discard(record_path)
+        self._update_bulk_toolbar()
+
+    def _export_selected_records(self) -> None:
+        selected = self._selected_paths()
+        if selected:
+            self.export_compare_archives_html_requested.emit(selected)
+
+    def _regenerate_selected_records(self) -> None:
+        selected = self._selected_paths()
+        if selected:
+            self.regenerate_compare_archives_requested.emit(selected)
 
     def _rebuild_stats(self) -> None:
         records = self._compare_records
@@ -163,18 +250,13 @@ class ReportsPage(QWidget):
                 widget.hide()
                 widget.deleteLater()
 
-        q = self._report_filter
-        visible = [
-            r for r in self._compare_records
-            if not q or q in r.title.lower()
-            or q in r.backup_a_title.lower()
-            or q in r.backup_b_title.lower()
-        ] if self._compare_records else []
+        visible = self._visible_records()
 
         if not self._compare_records:
             self._cards_layout.addWidget(self._build_empty_state())
             self._cards_layout.addStretch()
             self._cards_scroll.setVisible(True)
+            self._update_bulk_toolbar()
             return
 
         if not visible:
@@ -184,6 +266,7 @@ class ReportsPage(QWidget):
             self._cards_layout.addWidget(no_match)
             self._cards_layout.addStretch()
             self._cards_scroll.setVisible(True)
+            self._update_bulk_toolbar()
             return
 
         for record in visible:
@@ -191,6 +274,7 @@ class ReportsPage(QWidget):
 
         self._cards_layout.addStretch()
         self._cards_scroll.setVisible(True)
+        self._update_bulk_toolbar()
 
     def _build_report_card(self, record: CompareLibraryRecord) -> QFrame:
         card = QFrame(self._cards_container)
@@ -204,6 +288,14 @@ class ReportsPage(QWidget):
         # ── top row: title + actions ──────────────────────────────────────────
         top = QHBoxLayout()
         top.setSpacing(10)
+
+        select_box = QCheckBox()
+        select_box.setObjectName("ReportSelectBox")
+        select_box.setToolTip("Select this saved report for bulk actions.")
+        select_box.setChecked(record.record_path in self._selected_record_paths)
+        select_box.toggled.connect(
+            lambda checked, p=record.record_path: self._on_record_selection_changed(p, checked)
+        )
 
         title_lbl = QLabel(record.title)
         title_lbl.setObjectName("PanelTitle")
@@ -236,6 +328,7 @@ class ReportsPage(QWidget):
         delete_btn.setObjectName("GhostButton")
         delete_btn.clicked.connect(lambda: self.delete_compare_archive_requested.emit(record.record_path))
 
+        top.addWidget(select_box)
         top.addWidget(title_lbl, 1)
         top.addWidget(open_btn)
         top.addWidget(export_btn)
@@ -275,22 +368,20 @@ class ReportsPage(QWidget):
             lbl.setObjectName("Muted")
             return lbl
 
-        stats_row.addWidget(_chip("compared", record.total_items))
-        stats_row.addWidget(_chip("actionable", record.actionable))
-        if record.ignored:
-            stats_row.addWidget(_chip("ignored", record.ignored))
-        stats_row.addWidget(_chip("changed", record.changed))
         security_count = record.risk_counts.get("Security", 0)
         protection_count = record.risk_counts.get("Protection", 0)
-        if security_count:
-            stats_row.addWidget(_chip("security impact", security_count))
-        if protection_count:
-            stats_row.addWidget(_chip("protection impact", protection_count))
-        if record.added:
-            stats_row.addWidget(_chip("missing in A", record.added))
-        if record.removed:
-            stats_row.addWidget(_chip("missing in B", record.removed))
-        stats_row.addWidget(_chip("reviewed", record.reviewed))
+        for label, value in [
+            ("compared", record.total_items),
+            ("actionable", record.actionable),
+            ("ignored", record.ignored),
+            ("changed", record.changed),
+            ("missing in A", record.added),
+            ("missing in B", record.removed),
+            ("security impact", security_count),
+            ("protection impact", protection_count),
+            ("reviewed", record.reviewed),
+        ]:
+            stats_row.addWidget(_chip(label, value))
         stats_row.addStretch()
 
         source_badge = badge(record.source_status, _source_badge_state(record.source_status), min_width=132)

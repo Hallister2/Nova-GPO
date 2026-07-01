@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import unittest
 
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app.gpo.gpo_model import GpoBackup
 from app.library_store import CompareLibraryRecord
@@ -213,18 +213,18 @@ class TestReportsPageSmoke(unittest.TestCase):
     def setUpClass(cls) -> None:
         _get_app()
 
-    def test_report_card_has_html_export_action(self) -> None:
-        record = CompareLibraryRecord(
-            record_id="record-1",
-            title="Saved Compare",
+    def _record(self, record_id: str = "record-1", title: str = "Saved Compare") -> CompareLibraryRecord:
+        return CompareLibraryRecord(
+            record_id=record_id,
+            title=title,
             backup_a_title="Backup A",
             backup_b_title="Backup B",
             backup_a_path="A",
             backup_b_path="B",
             saved_at="2026-06-01T12:00:00",
-            record_path="C:/Temp/record/compare.json",
-            html_path="C:/Temp/record/report.html",
-            markdown_path="C:/Temp/record/report.md",
+            record_path=f"C:/Temp/{record_id}/compare.json",
+            html_path=f"C:/Temp/{record_id}/report.html",
+            markdown_path=f"C:/Temp/{record_id}/report.md",
             total_items=1,
             changed=1,
             added=0,
@@ -236,6 +236,9 @@ class TestReportsPageSmoke(unittest.TestCase):
             risk_counts={},
             diagnostics={},
         )
+
+    def test_report_card_has_html_export_action(self) -> None:
+        record = self._record()
         page = ReportsPage({}, lambda: [], lambda: [])
         emitted: list[str] = []
         page.export_compare_archive_html_requested.connect(emitted.append)
@@ -249,6 +252,44 @@ class TestReportsPageSmoke(unittest.TestCase):
         self.assertEqual(len(export_buttons), 1)
         export_buttons[0].click()
         self.assertEqual(emitted, [record.record_path])
+        page.close()
+
+    def test_report_card_bulk_selection_and_standard_stats(self) -> None:
+        record = self._record()
+        page = ReportsPage({}, lambda: [], lambda: [])
+        exported: list[list[str]] = []
+        regenerated: list[list[str]] = []
+        page.export_compare_archives_html_requested.connect(exported.append)
+        page.regenerate_compare_archives_requested.connect(regenerated.append)
+        page.populate_compare_records([record])
+
+        label_texts = {label.text() for label in page.findChildren(QLabel)}
+        for expected in [
+            "1  compared",
+            "1  actionable",
+            "0  ignored",
+            "1  changed",
+            "0  missing in A",
+            "0  missing in B",
+            "0  security impact",
+            "0  protection impact",
+            "0  reviewed",
+        ]:
+            self.assertIn(expected, label_texts)
+
+        select_all = next(button for button in page.findChildren(QPushButton) if button.text() == "Select All")
+        export_selected = next(button for button in page.findChildren(QPushButton) if button.text() == "Export Selected")
+        regenerate_selected = next(button for button in page.findChildren(QPushButton) if button.text() == "Regenerate Selected")
+
+        self.assertFalse(export_selected.isEnabled())
+        select_all.click()
+        self.assertTrue(export_selected.isEnabled())
+
+        export_selected.click()
+        regenerate_selected.click()
+
+        self.assertEqual(exported, [[record.record_path]])
+        self.assertEqual(regenerated, [[record.record_path]])
         page.close()
 
 

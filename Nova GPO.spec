@@ -58,7 +58,11 @@ exe = EXE(
     strip=False,
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # Avoid extracting the onefile runtime into %TEMP%, where updater/install
+    # handoffs and endpoint cleanup can remove _MEI contents before python*.dll
+    # is loaded. The installer creates this directory with standard-user write
+    # access.
+    runtime_tmpdir=r'C:\ProgramData\Hallister Labs\Nova GPO\Runtime',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

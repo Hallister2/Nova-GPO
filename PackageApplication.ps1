@@ -67,6 +67,25 @@ function Sync-InnoVersion {
     $issContent = Get-Content -Path $IssPath -Raw
     $issContent = $issContent -replace '#define MyAppVersion ".+?"', "#define MyAppVersion `"$AppVersion`""
     $issContent = $issContent -replace 'Flags:\s*nowait postinstall skipifsilent runasoriginaluser', 'Flags: shellexec nowait postinstall skipifsilent runasoriginaluser'
+    $runtimeDirLine = 'Name: "{commonappdata}\Hallister Labs\Nova GPO\Runtime"; Permissions: users-modify'
+    if ($issContent -notmatch [regex]::Escape($runtimeDirLine)) {
+        if ($issContent -match '\[Dirs\]') {
+            $issContent = $issContent -replace '(\[Dirs\]\s*)', "`$1$runtimeDirLine`r`n"
+        }
+        else {
+            $issContent = $issContent -replace '(\[Files\])', "[Dirs]`r`n$runtimeDirLine`r`n`r`n`$1"
+        }
+    }
+
+    $runtimeDeleteLine = 'Type: filesandordirs; Name: "{commonappdata}\Hallister Labs\Nova GPO\Runtime"'
+    if ($issContent -notmatch [regex]::Escape($runtimeDeleteLine)) {
+        if ($issContent -match '\[UninstallDelete\]') {
+            $issContent = $issContent -replace '(\[UninstallDelete\]\s*)', "`$1$runtimeDeleteLine`r`n"
+        }
+        else {
+            $issContent = $issContent.TrimEnd() + "`r`n`r`n[UninstallDelete]`r`n$runtimeDeleteLine`r`n"
+        }
+    }
     Set-Content -Path $IssPath -Value $issContent -Encoding UTF8
 }
 

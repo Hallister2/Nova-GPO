@@ -93,6 +93,19 @@ def _safe_export_filename(title: str) -> str:
     return f"{stem[:120]}.html"
 
 
+def _unique_export_path(folder: Path, filename: str, used_names: set[str] | None = None) -> Path:
+    used = used_names if used_names is not None else set()
+    candidate = folder / filename
+    stem = candidate.stem
+    suffix = candidate.suffix or ".html"
+    counter = 2
+    while candidate.exists() or candidate.name.casefold() in used:
+        candidate = folder / f"{stem} ({counter}){suffix}"
+        counter += 1
+    used.add(candidate.name.casefold())
+    return candidate
+
+
 def _quit_thread(thread: QThread | None, timeout_ms: int = 1500) -> None:
     if not _thread_is_running(thread):
         return
@@ -454,9 +467,11 @@ class MainWindow(QMainWindow):
         self.reports_page.compare_backups_requested.connect(self._compare_backups)
         self.reports_page.open_compare_archive_requested.connect(self._open_compare_archive)
         self.reports_page.export_compare_archive_html_requested.connect(self._export_compare_archive_html)
+        self.reports_page.export_compare_archives_html_requested.connect(self._export_compare_archives_html)
         self.reports_page.delete_compare_archive_requested.connect(self._delete_compare_archive)
         self.reports_page.rename_compare_archive_requested.connect(self._rename_compare_archive)
         self.reports_page.regenerate_compare_archive_requested.connect(self._regenerate_compare_archive)
+        self.reports_page.regenerate_compare_archives_requested.connect(self._regenerate_compare_archives)
         self.reports_page.backup_library_requested.connect(lambda: self._set_page("Backup Library"))
 
         # Settings
@@ -903,6 +918,49 @@ class MainWindow(QMainWindow):
 
         self._toast.success(f"HTML report exported to {destination_path.name}.")
 
+    def _export_compare_archives_html(self, record_paths: list[str]) -> None:
+        selected = [record for record in self.compare_records if record.record_path in set(record_paths)]
+        if not selected:
+            return
+
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        destination = QFileDialog.getExistingDirectory(
+            self,
+            "Export HTML Reports",
+            str(REPORTS_DIR),
+        )
+        if not destination:
+            return
+
+        destination_folder = Path(destination)
+        exported = 0
+        failures: list[str] = []
+        used_names: set[str] = set()
+        for record in selected:
+            source_path = Path(record.html_path) if record.html_path else Path(record.record_path).with_name("report.html")
+            if not source_path.exists():
+                failures.append(f"{record.title}: saved HTML report missing")
+                continue
+            target_path = _unique_export_path(
+                destination_folder,
+                _safe_export_filename(record.title),
+                used_names,
+            )
+            try:
+                shutil.copyfile(source_path, target_path)
+                exported += 1
+            except Exception as error:
+                failures.append(f"{record.title}: {error}")
+
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Export Incomplete",
+                f"Exported {exported} report(s).\n\n" + "\n".join(failures[:8]),
+            )
+        else:
+            self._toast.success(f"Exported {exported} HTML report(s).")
+
     def _delete_compare_archive(self, record_path: str) -> None:
         answer = QMessageBox.question(
             self,
@@ -949,6 +1007,39 @@ class MainWindow(QMainWindow):
 
         self._refresh_compare_records()
         self._toast.success("Saved report regenerated.")
+
+    def _regenerate_compare_archives(self, record_paths: list[str]) -> None:
+        selected = [record for record in self.compare_records if record.record_path in set(record_paths)]
+        if not selected:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Regenerate Reports",
+            f"Regenerate {len(selected)} saved report(s) from their original backup folders using the current report generator?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        regenerated = 0
+        failures: list[str] = []
+        for record in selected:
+            try:
+                regenerate_compare_record(record.record_path)
+                regenerated += 1
+            except Exception as error:
+                failures.append(f"{record.title}: {error}")
+
+        self._refresh_compare_records()
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Regenerate Incomplete",
+                f"Regenerated {regenerated} report(s).\n\n" + "\n".join(failures[:8]),
+            )
+        else:
+            self._toast.success(f"Regenerated {regenerated} report(s).")
 
     def _handle_compare_from_view(self, backup_path: str, view_window) -> None:
         view_window.accept()
