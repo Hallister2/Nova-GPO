@@ -202,6 +202,8 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn('<a class="status-link" href="#review-make-changes-to-a">Make Changes to A', report)
         self.assertIn('<section class="status-section" id="review-make-changes-to-a">', report)
         self.assertIn("<details class=\"policy-card\"", report)
+        self.assertIn('<span class="badge badge-review">Make Changes to A</span>', report)
+        self.assertIn('<div class="strip-cell"><span>Status</span><strong>Different</strong></div>', report)
         self.assertIn("Expand All", report)
         self.assertIn("Collapse All", report)
         self.assertIn("window.addEventListener('beforeprint'", report)

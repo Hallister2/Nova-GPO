@@ -381,6 +381,7 @@ def html_report(
     .badge-status-added{{background:rgba(130,182,255,.15);color:#82b6ff;border:1px solid rgba(130,182,255,.35)}}
     .badge-status-removed{{background:rgba(220,53,69,.2);color:#f07070;border:1px solid rgba(220,53,69,.35)}}
     .badge-status-unchanged{{background:rgba(255,255,255,.07);color:#9aa0a6;border:1px solid rgba(255,255,255,.12)}}
+    .badge-review{{background:rgba(130,182,255,.12);color:#d8e7ff;border:1px solid rgba(130,182,255,.32)}}
     .review-note{{margin-top:12px;padding:9px 12px;background:rgba(255,165,0,.08);border-left:3px solid #e8804080;border-radius:0 4px 4px 0;font-size:13px}}
     .evidence{{margin-top:12px;padding:9px 12px;background:#101112;border:1px solid rgba(255,255,255,.07);border-radius:6px;color:#c0c3c7;font-size:12px}}
     .appendix{{margin-top:34px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}}
@@ -570,7 +571,6 @@ def _html_policy_section(
     review_status = normalize_review_status(review.get("status", "Pending Review"))
     changes = setting_changes(item)
 
-    status_cls = f"badge-status-{item.status.lower()}"
     status_label = _status_label(item.status)
 
     attrs = [
@@ -613,7 +613,7 @@ def _html_policy_section(
       <span class="policy-name">{escape(name)}</span>
       <span class="policy-summary">{summary_html}</span>
     </span>
-    <span class="badge {escape(status_cls)}">{escape(status_label)}</span>
+    <span class="badge badge-review">{escape(review_status)}</span>
   </summary>
   <div class="policy-body">
     <div class="finding-tools">
