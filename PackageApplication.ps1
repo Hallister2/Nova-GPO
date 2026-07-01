@@ -66,6 +66,7 @@ function Sync-InnoVersion {
 
     $issContent = Get-Content -Path $IssPath -Raw
     $issContent = $issContent -replace '#define MyAppVersion ".+?"', "#define MyAppVersion `"$AppVersion`""
+    $issContent = $issContent -replace 'Flags:\s*nowait postinstall skipifsilent runasoriginaluser', 'Flags: shellexec nowait postinstall skipifsilent runasoriginaluser'
     Set-Content -Path $IssPath -Value $issContent -Encoding UTF8
 }
 
