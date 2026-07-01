@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 import unittest
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from app.gpo.gpo_model import GpoBackup
+from app.library_store import CompareLibraryRecord
 from app.ui.archived_compare_window import ArchivedCompareWindow
 from app.ui.compare_window import CompareWindow
+from app.ui.pages.reports_page import ReportsPage
 from app.ui.view_window import ViewWindow
 
 # One QApplication for the entire module — Qt requires exactly one instance.
@@ -204,6 +206,50 @@ class TestArchivedCompareWindowSmoke(unittest.TestCase):
             self.assertIn("Settings to apply to Backup A", rendered)
             self.assertIn("Desired", rendered)
             win.close()
+
+
+class TestReportsPageSmoke(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        _get_app()
+
+    def test_report_card_has_html_export_action(self) -> None:
+        record = CompareLibraryRecord(
+            record_id="record-1",
+            title="Saved Compare",
+            backup_a_title="Backup A",
+            backup_b_title="Backup B",
+            backup_a_path="A",
+            backup_b_path="B",
+            saved_at="2026-06-01T12:00:00",
+            record_path="C:/Temp/record/compare.json",
+            html_path="C:/Temp/record/report.html",
+            markdown_path="C:/Temp/record/report.md",
+            total_items=1,
+            changed=1,
+            added=0,
+            removed=0,
+            reviewed=0,
+            actionable=1,
+            ignored=0,
+            source_status="Sources available",
+            risk_counts={},
+            diagnostics={},
+        )
+        page = ReportsPage({}, lambda: [], lambda: [])
+        emitted: list[str] = []
+        page.export_compare_archive_html_requested.connect(emitted.append)
+        page.populate_compare_records([record])
+
+        export_buttons = [
+            button for button in page.findChildren(QPushButton)
+            if button.text() == "Export HTML"
+        ]
+
+        self.assertEqual(len(export_buttons), 1)
+        export_buttons[0].click()
+        self.assertEqual(emitted, [record.record_path])
+        page.close()
 
 
 if __name__ == "__main__":

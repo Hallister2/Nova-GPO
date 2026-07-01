@@ -28,6 +28,7 @@ _log = get_logger(__name__)
 class ReportsPage(QWidget):
     compare_backups_requested = Signal(str, str)
     open_compare_archive_requested = Signal(str)
+    export_compare_archive_html_requested = Signal(str)
     delete_compare_archive_requested = Signal(str)
     rename_compare_archive_requested = Signal(str, str)   # record_path, new_title
     regenerate_compare_archive_requested = Signal(str)
@@ -212,6 +213,11 @@ class ReportsPage(QWidget):
         open_btn.setObjectName("PrimaryButton")
         open_btn.clicked.connect(lambda: self.open_compare_archive_requested.emit(record.record_path))
 
+        export_btn = QPushButton("Export HTML")
+        export_btn.setObjectName("GhostButton")
+        export_btn.setToolTip("Export the saved HTML report to another location.")
+        export_btn.clicked.connect(lambda: self.export_compare_archive_html_requested.emit(record.record_path))
+
         regenerate_btn = QPushButton("Regenerate")
         regenerate_btn.setObjectName("GhostButton")
         regenerate_btn.setEnabled(record.source_status == "Sources available")
@@ -232,6 +238,7 @@ class ReportsPage(QWidget):
 
         top.addWidget(title_lbl, 1)
         top.addWidget(open_btn)
+        top.addWidget(export_btn)
         top.addWidget(regenerate_btn)
         top.addWidget(rename_btn)
         top.addWidget(delete_btn)

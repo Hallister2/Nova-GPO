@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import re
+import shutil
 import ssl
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -40,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.core.log import get_logger
-from app.core.settings import APP_ROOT, save_settings
+from app.core.settings import APP_ROOT, REPORTS_DIR, save_settings
 from app.core.update_checker import check_for_updates, github_ssl_context
 from app.ui.branding import APP_LOGO_PATH, app_icon
 from app.ui.styles import THEME_LABELS, build_stylesheet
@@ -81,6 +83,14 @@ def _thread_is_running(thread: QThread | None) -> bool:
         return bool(thread.isRunning())
     except RuntimeError:
         return False
+
+
+def _safe_export_filename(title: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", title).strip(" ._")
+    stem = re.sub(r"\s+", " ", stem)
+    if not stem:
+        stem = "NovaGPO_Report"
+    return f"{stem[:120]}.html"
 
 
 def _quit_thread(thread: QThread | None, timeout_ms: int = 1500) -> None:
@@ -443,6 +453,7 @@ class MainWindow(QMainWindow):
         # Reports
         self.reports_page.compare_backups_requested.connect(self._compare_backups)
         self.reports_page.open_compare_archive_requested.connect(self._open_compare_archive)
+        self.reports_page.export_compare_archive_html_requested.connect(self._export_compare_archive_html)
         self.reports_page.delete_compare_archive_requested.connect(self._delete_compare_archive)
         self.reports_page.rename_compare_archive_requested.connect(self._rename_compare_archive)
         self.reports_page.regenerate_compare_archive_requested.connect(self._regenerate_compare_archive)
@@ -852,6 +863,45 @@ class MainWindow(QMainWindow):
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.finished.connect(lambda _: self._refresh_compare_records())
         window.show()
+
+    def _export_compare_archive_html(self, record_path: str) -> None:
+        if not record_path:
+            return
+
+        record = next((r for r in self.compare_records if r.record_path == record_path), None)
+        path = Path(record_path)
+        source_path = Path(record.html_path) if record and record.html_path else path.with_name("report.html")
+        if not source_path.exists():
+            QMessageBox.warning(
+                self,
+                "HTML Report Missing",
+                "The saved HTML report could not be found. Regenerate the report, then try exporting again.",
+            )
+            self._refresh_compare_records()
+            return
+
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        default_name = REPORTS_DIR / _safe_export_filename(record.title if record else path.parent.name)
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export HTML Report",
+            str(default_name),
+            "HTML Report (*.html);;All Files (*)",
+        )
+        if not destination:
+            return
+
+        destination_path = Path(destination)
+        if destination_path.suffix.lower() not in {".html", ".htm"}:
+            destination_path = destination_path.with_suffix(".html")
+
+        try:
+            shutil.copyfile(source_path, destination_path)
+        except Exception as error:
+            QMessageBox.critical(self, "Export Failed", str(error))
+            return
+
+        self._toast.success(f"HTML report exported to {destination_path.name}.")
 
     def _delete_compare_archive(self, record_path: str) -> None:
         answer = QMessageBox.question(
