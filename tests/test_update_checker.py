@@ -54,9 +54,9 @@ class UpdateCheckerTests(unittest.TestCase):
 
     def test_check_for_updates_reports_prerelease_update(self) -> None:
         release = {
-            "tag_name": "0.8",
-            "name": "Nova GPO 0.8",
-            "html_url": "https://github.com/Hallister2/Nova-GPO/releases/tag/0.8",
+            "tag_name": "99.0",
+            "name": "Nova GPO 99.0",
+            "html_url": "https://github.com/Hallister2/Nova-GPO/releases/tag/99.0",
             "draft": False,
             "prerelease": True,
         }
@@ -67,7 +67,7 @@ class UpdateCheckerTests(unittest.TestCase):
         self.assertTrue(result.release_found)
         self.assertTrue(result.is_update_available)
         self.assertTrue(result.is_prerelease)
-        self.assertEqual(result.latest_version, "0.8")
+        self.assertEqual(result.latest_version, "99.0")
 
     def test_checksum_asset_matches_installer_sidecar(self) -> None:
         release = {

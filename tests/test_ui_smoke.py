@@ -164,6 +164,47 @@ class TestArchivedCompareWindowSmoke(unittest.TestCase):
             self.assertIn("Browser Policy", win.detail_title.text())
             win.close()
 
+    def test_saved_review_detail_includes_directional_action_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record_path = Path(tmp) / "compare.json"
+            policy_a = {
+                "name": "Browser Policy",
+                "state": "Enabled",
+                "scope": "Computer Configuration",
+                "category": "Group Policy Preferences > Registry",
+                "policy_type": "Preference",
+                "source": "gpreport.xml::Registry",
+                "settings": ["Action: Replace", "Value: Old"],
+            }
+            policy_b = {
+                **policy_a,
+                "settings": ["Action: Update", "Value: Desired"],
+            }
+            record_path.write_text(json.dumps({
+                "title": "Saved Compare",
+                "summary": {"total_items": 1, "actionable": 1, "reviewed": 1},
+                "findings": [{
+                    "key": "finding-1",
+                    "name": "Browser Policy",
+                    "status": "Changed",
+                    "scope": "Computer Configuration",
+                    "state_a": "Enabled",
+                    "state_b": "Enabled",
+                    "policy_a": policy_a,
+                    "policy_b": policy_b,
+                    "changes": ["Value changed"],
+                    "review": {"status": "Make Changes to A", "priority": "Normal"},
+                }],
+            }), encoding="utf-8")
+
+            win = ArchivedCompareWindow(str(record_path))
+            rendered = win.detail_text.toHtml()
+            self.assertIn("Review Action Plan", rendered)
+            self.assertIn("Update Browser Policy in Backup A", rendered)
+            self.assertIn("Settings to apply to Backup A", rendered)
+            self.assertIn("Desired", rendered)
+            win.close()
+
 
 if __name__ == "__main__":
     unittest.main()

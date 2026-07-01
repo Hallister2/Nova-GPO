@@ -11,7 +11,7 @@ from pathlib import Path
 from app import __version__
 from app.gpo.comparison_model import PolicyDiff, setting_changes
 from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
-from app.review_status import normalize_review_status
+from app.review_status import REVIEW_STATUSES, normalize_review_status
 from app.reports.insights import diagnostics_dict, parser_diagnostics, risk_counts, risk_tag
 
 
@@ -230,20 +230,23 @@ def html_report(
     summary = _summary_counts(diff_items, notes)
     risks = risk_counts(diff_items)
     diagnostics = parser_diagnostics(diff_items)
+    report_items = _items_for_profile(diff_items, profile)
+    verdict = _executive_verdict(summary, risks, report_items, notes)
+    status_overview = "" if profile == "executive" else _html_status_overview(report_items, notes)
 
-    summary_rows = "".join(
-        f"<tr><td>{escape(label)}</td><td><strong>{escape(str(value))}</strong></td></tr>"
+    summary_items = "".join(
+        f'<div class="summary-chip"><strong>{escape(str(value))}</strong><span>{escape(label)}</span></div>'
         for label, value in [
-            ("Total compared", summary["total"]),
-            ("Actionable findings", summary["actionable"]),
-            ("Ignored", summary["ignored"]),
+            ("Compared", summary["total"]),
+            ("Actionable", summary["actionable"]),
             ("Reviewed", summary["reviewed"]),
-            ("Pending review", summary["unreviewed"]),
+            ("Pending", summary["unreviewed"]),
             ("Different", summary["changed"]),
             ("Missing in A", summary["missing_in_a"]),
             ("Missing in B", summary["missing_in_b"]),
-            ("Security-impacting", risks.get("Security", 0)),
-            ("Protection-impacting", risks.get("Protection", 0)),
+            ("Security", risks.get("Security", 0)),
+            ("Protection", risks.get("Protection", 0)),
+            ("Ignored", summary["ignored"]),
         ]
     )
 
@@ -257,8 +260,7 @@ def html_report(
         ]
     )
 
-    report_items = _items_for_profile(diff_items, profile)
-    policy_sections = "" if profile == "executive" else "".join(_html_policy_section(item, notes) for item in report_items)
+    policy_sections = "" if profile == "executive" else _html_policy_sections(report_items, notes, title_a, title_b)
     if profile != "executive" and not policy_sections:
         policy_sections = '<div class="policy-card"><div class="policy-body">No actionable differences were detected.</div></div>'
     policy_heading = "" if profile == "executive" else "<h2>{}</h2>".format(
@@ -273,21 +275,65 @@ def html_report(
   <style>
     *{{box-sizing:border-box;margin:0;padding:0}}
     body{{background:#101112;color:#f4f6f8;font-family:"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.6;padding:40px 48px}}
-    h1{{font-size:24px;font-weight:600;margin-bottom:4px}}
+    h1{{font-size:24px;font-weight:700;margin-bottom:4px}}
     h2{{font-size:16px;font-weight:600;color:#c0c3c7;margin:28px 0 10px}}
     h3{{font-size:14px;font-weight:600;margin-bottom:6px}}
     .muted{{color:#9aa0a6;font-size:13px}}
-    .meta{{display:flex;gap:32px;margin:16px 0 28px;padding:16px 20px;background:#18191b;border-radius:8px;border:1px solid rgba(255,255,255,.07)}}
+    .cover{{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:start;padding:20px 22px;background:linear-gradient(135deg,#1f2023 0%,#18191b 64%,#23190f 100%);border:1px solid rgba(255,255,255,.08);border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.22)}}
+    .brand-row{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
+    .brand-mark{{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:8px;background:#101112;border:1px solid rgba(255,138,31,.35);color:#ff8a1f;font-weight:900;letter-spacing:.04em}}
+    .brand-text{{display:flex;flex-direction:column;line-height:1.1}}
+    .brand-text strong{{font-size:18px;letter-spacing:.12em}}
+    .brand-text span{{font-size:11px;color:#ff8a1f;font-weight:800;letter-spacing:.12em}}
+    .cover-actions{{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}}
+    .meta{{display:flex;flex-wrap:wrap;gap:12px 22px;margin-top:14px}}
     .meta-item span{{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#9aa0a6;margin-bottom:2px}}
     table{{width:100%;border-collapse:collapse}}
     th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.07)}}
     th{{background:#202123;color:#c0c3c7;font-size:12px;text-transform:uppercase;letter-spacing:.04em}}
     tr:last-child td{{border-bottom:none}}
     .summary-table{{max-width:360px;background:#18191b;border-radius:8px;border:1px solid rgba(255,255,255,.07);overflow:hidden}}
+    .report-summary-bar{{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 10px;padding:10px;background:#18191b;border:1px solid rgba(255,255,255,.07);border-radius:8px}}
+    .summary-chip{{display:flex;align-items:baseline;gap:6px;min-height:34px;padding:6px 10px;background:#101112;border:1px solid rgba(255,255,255,.07);border-radius:6px}}
+    .summary-chip strong{{font-size:16px;color:#f4f6f8;line-height:1}}
+    .summary-chip span{{color:#9aa0a6;font-size:12px;font-weight:700;white-space:nowrap}}
+    .diagnostics-details{{margin:0 0 12px;color:#c0c3c7}}
+    .diagnostics-details summary{{cursor:pointer;display:inline-flex;align-items:center;gap:6px;color:#9aa0a6;font-size:12px;font-weight:700}}
+    .diagnostics-details summary::-webkit-details-marker{{display:none}}
+    .diagnostics-details summary::before{{content:"+";display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#18191b;color:#ff8a1f}}
+    .diagnostics-details[open] summary::before{{content:"-"}}
+    .diagnostics-details .summary-table{{margin-top:8px}}
+    .verdict{{margin:14px 0 0;padding:12px 14px;background:rgba(130,182,255,.08);border:1px solid rgba(130,182,255,.22);border-left:4px solid #82b6ff;border-radius:0 8px 8px 0;color:#d8e7ff;font-weight:700}}
+    .status-overview{{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 12px}}
+    .status-pill{{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid rgba(255,255,255,.1);border-radius:999px;background:#18191b;color:#d0d4d8;font-size:12px;font-weight:800;text-decoration:none}}
+    .status-pill .count{{color:#ff8a1f}}
+    .report-toolbar{{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 18px;padding:10px 0;background:#101112;border-bottom:1px solid rgba(255,255,255,.07)}}
+    .status-nav{{display:flex;flex-wrap:wrap;gap:8px;flex:1}}
+    .status-link{{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;background:#18191b;border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#d0d4d8;text-decoration:none;font-size:12px;font-weight:700}}
+    .status-link:hover{{border-color:#ff8a1f;color:#fff}}
+    .status-count{{color:#ff8a1f}}
+    .toolbar-actions{{display:flex;gap:8px;margin-left:auto}}
+    .report-button{{appearance:none;border:1px solid rgba(255,255,255,.12);border-radius:6px;background:#18191b;color:#f4f6f8;padding:6px 10px;font:700 12px "Segoe UI",Arial,sans-serif;cursor:pointer}}
+    .report-button:hover{{border-color:#ff8a1f}}
+    .status-section{{margin:20px 0 28px;scroll-margin-top:20px}}
+    .status-heading{{display:flex;align-items:center;gap:10px;padding:9px 0 8px;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:12px}}
+    .status-heading h2{{margin:0;flex:1}}
     .policy-card{{background:#18191b;border:1px solid rgba(255,255,255,.07);border-radius:8px;margin-bottom:18px;overflow:hidden}}
+    details.policy-card summary{{cursor:pointer;list-style:none}}
+    details.policy-card summary::-webkit-details-marker{{display:none}}
+    details.policy-card summary::before{{content:"+";display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:#101112;color:#ff8a1f;font-weight:800;margin-right:2px}}
+    details.policy-card[open] summary::before{{content:"-"}}
     .policy-header{{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#202123;border-bottom:1px solid rgba(255,255,255,.07)}}
-    .policy-name{{font-weight:600;flex:1;font-size:14px}}
+    .policy-heading{{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}}
+    .policy-name{{font-weight:600;font-size:14px}}
+    .policy-summary{{display:flex;flex-wrap:wrap;gap:6px 16px;color:#9aa0a6;font-size:12px}}
+    .policy-summary strong{{color:#d0d4d8}}
     .policy-body{{padding:16px}}
+    .finding-tools{{display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px}}
+    .review-decision{{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin-bottom:14px}}
+    .decision-cell{{background:#101112;border:1px solid rgba(255,255,255,.07);border-radius:6px;padding:8px 10px}}
+    .decision-cell span{{display:block;color:#9aa0a6;font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;margin-bottom:2px}}
+    .decision-cell strong{{font-size:12px;color:#f4f6f8}}
     .attrs{{display:flex;flex-wrap:wrap;gap:6px 24px;margin-bottom:10px}}
     .attr{{font-size:12px;color:#9aa0a6}}.attr strong{{color:#c0c3c7}}
     .status-strip{{display:grid;grid-template-columns:1fr 1fr;margin-bottom:14px;border:1px solid rgba(255,255,255,.07);overflow:hidden;border-radius:6px}}
@@ -299,6 +345,15 @@ def html_report(
     .remediation td{{font-size:12px;vertical-align:top}}
     .remediation-action{{width:110px;color:#82b6ff;font-weight:800;text-transform:uppercase;letter-spacing:.03em}}
     .remediation-target{{width:100px;color:#c0c3c7;font-weight:700}}
+    .action-plan{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:4px solid #82b6ff;border-radius:6px;padding:12px;margin:6px 0 16px}}
+    .action-title{{font-size:14px;font-weight:800;color:#f4f6f8;margin-bottom:4px}}
+    .action-lead{{color:#c0c3c7;font-size:13px;margin-bottom:10px}}
+    .action-fields{{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:8px 0 12px}}
+    .action-field{{padding:8px;background:#18191b;border:1px solid rgba(255,255,255,.07);border-radius:6px}}
+    .action-field span{{display:block;color:#9aa0a6;font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;margin-bottom:2px}}
+    .action-field strong{{font-size:12px;color:#f4f6f8}}
+    .direction-note{{background:rgba(255,138,31,.08);border:1px solid rgba(255,138,31,.24);border-left:3px solid #ff8a1f;border-radius:0 6px 6px 0;padding:10px 12px;margin:6px 0 16px;color:#d0d4d8;font-size:13px}}
+    .action-stack{{display:grid;grid-template-columns:1fr;gap:12px}}
     .compare-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}}
     .side-card{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:4px solid #9aa0a6;border-radius:6px;padding:10px 12px}}
     .side-card.b{{border-left-color:#ff8a1f}}
@@ -307,53 +362,209 @@ def html_report(
     .kv{{width:100%;border-collapse:collapse;background:#101112;border:1px solid rgba(255,255,255,.07);margin:4px 0 10px}}
     .kv td{{padding:4px 7px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px;vertical-align:top}}
     .kv tr:last-child td{{border-bottom:0}}
+    .kv tr.kv-diff td{{background:rgba(255,138,31,.11);border-bottom-color:rgba(255,138,31,.18)}}
     .kv-key{{width:34%;color:#9aa0a6;font-weight:700;white-space:nowrap}}
     .kv-value{{color:#d0d4d8}}
     .ilt-card{{background:#101112;border:1px solid rgba(255,255,255,.07);border-left:3px solid #82b6ff;border-radius:4px;padding:8px 10px;margin:6px 0 10px}}
+    .ilt-card.diff{{border-left-color:#ff8a1f;background:rgba(255,138,31,.08)}}
     .ilt-title{{color:#82b6ff;font-size:12px;font-weight:800;margin-bottom:5px}}
+    details.targeting-details{{margin-top:8px}}
+    details.targeting-details summary{{cursor:pointer;color:#ff8a1f;font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 6px}}
+    details.targeting-details summary::-webkit-details-marker{{display:none}}
+    details.targeting-details summary::before{{content:"+";display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#18191b;color:#ff8a1f;margin-right:6px}}
+    details.targeting-details[open] summary::before{{content:"-"}}
     ul{{padding-left:18px;margin-top:4px}}
     li{{font-size:13px;color:#d0d4d8;margin-bottom:3px}}
     .badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}}
     .badge-status-changed{{background:rgba(255,165,0,.15);color:#e8a040;border:1px solid rgba(255,165,0,.3)}}
-    .badge-status-added{{background:rgba(100,180,100,.15);color:#8acf8a;border:1px solid rgba(100,180,100,.3)}}
+    .badge-status-different{{background:rgba(255,165,0,.15);color:#e8a040;border:1px solid rgba(255,165,0,.3)}}
+    .badge-status-added{{background:rgba(130,182,255,.15);color:#82b6ff;border:1px solid rgba(130,182,255,.35)}}
     .badge-status-removed{{background:rgba(220,53,69,.2);color:#f07070;border:1px solid rgba(220,53,69,.35)}}
     .badge-status-unchanged{{background:rgba(255,255,255,.07);color:#9aa0a6;border:1px solid rgba(255,255,255,.12)}}
     .review-note{{margin-top:12px;padding:9px 12px;background:rgba(255,165,0,.08);border-left:3px solid #e8804080;border-radius:0 4px 4px 0;font-size:13px}}
     .evidence{{margin-top:12px;padding:9px 12px;background:#101112;border:1px solid rgba(255,255,255,.07);border-radius:6px;color:#c0c3c7;font-size:12px}}
-    @media print{{body{{background:#fff;color:#111;padding:18px}}.policy-card,.meta,.summary-table,.side-card,.delta{{background:#fff;color:#111;border-color:#ddd}}.muted,.attr,.side-title,.strip-cell span{{color:#555}}}}
+    .appendix{{margin-top:34px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}}
+    @media (max-width:900px){{body{{padding:24px 18px}}.cover{{grid-template-columns:1fr}}.cover-actions{{justify-content:flex-start}}.compare-grid,.action-fields,.review-decision{{grid-template-columns:1fr}}.report-toolbar{{position:static}}}}
+    @media print{{body{{background:#fff;color:#111;padding:18px}}.cover,.report-toolbar{{position:static;background:#fff;box-shadow:none}}.policy-card,.meta,.summary-table,.side-card,.delta,.action-plan,.decision-cell{{background:#fff;color:#111;border-color:#ddd}}.muted,.attr,.side-title,.strip-cell span{{color:#555}}.toolbar-actions,.cover-actions,.finding-tools{{display:none}}}}
     .footer{{margin-top:48px;padding-top:16px;border-top:1px solid rgba(255,255,255,.07);color:#9aa0a6;font-size:12px}}
   </style>
 </head>
 <body>
-  <h1>Nova GPO Comparison Report</h1>
-  <div class="meta">
-    <div class="meta-item"><span>Generated</span>{escape(now)}</div>
-    <div class="meta-item"><span>Nova GPO</span>{escape(__version__)}</div>
-    <div class="meta-item"><span>Profile</span>{escape(profile)}</div>
-    <div class="meta-item"><span>Backup A</span>{escape(title_a)}</div>
-    <div class="meta-item"><span>Backup B</span>{escape(title_b)}</div>
+  <header class="cover">
+    <div>
+      <div class="brand-row">
+        <div class="brand-mark">N</div>
+        <div class="brand-text"><strong>NOVA</strong><span>GPO</span></div>
+      </div>
+      <h1>Comparison Report</h1>
+      <div class="muted">{escape(title_a)} vs {escape(title_b)}</div>
+      <div class="verdict">{escape(verdict)}</div>
+      <div class="meta">
+        <div class="meta-item"><span>Generated</span>{escape(now)}</div>
+        <div class="meta-item"><span>Nova GPO</span>{escape(__version__)}</div>
+        <div class="meta-item"><span>Profile</span>{escape(profile)}</div>
+      </div>
+    </div>
+    <div class="cover-actions">
+      <button class="report-button" type="button" onclick="printReport()">Print / PDF</button>
+      <button class="report-button" type="button" data-copy-target="body">Copy Report</button>
+    </div>
+  </header>
+
+  <div class="report-summary-bar" aria-label="Executive Summary">
+    {summary_items}
   </div>
-
-  <h2>Executive Summary</h2>
-  <table class="summary-table">
-    <tbody>{summary_rows}</tbody>
-  </table>
-
-  <h2>Parser Diagnostics</h2>
-  <table class="summary-table">
-    <tbody>{diagnostics_rows}</tbody>
-  </table>
+  {status_overview}
 
   {policy_heading}
   {policy_sections}
 
-  <div class="footer">Nova GPO {escape(__version__)} &mdash; Hallister Labs &mdash; Generated {escape(now)}</div>
+  <section class="appendix">
+    <details class="diagnostics-details">
+      <summary>Parser Diagnostics Appendix</summary>
+      <table class="summary-table">
+        <tbody>{diagnostics_rows}</tbody>
+      </table>
+    </details>
+  </section>
+
+  <div class="footer">Generated by Nova GPO {escape(__version__)} &mdash; Hallister Labs &mdash; {escape(now)} &mdash; Report profile: {escape(profile)}</div>
+  <script>
+    function setAllFindings(open) {{
+      document.querySelectorAll('details.policy-card').forEach(function(card) {{ card.open = open; }});
+    }}
+    function copyTextFromSelector(selector) {{
+      var target = selector === 'body' ? document.body : document.querySelector(selector);
+      if (!target || !navigator.clipboard) {{ return; }}
+      navigator.clipboard.writeText(target.innerText.trim());
+    }}
+    function printReport() {{
+      setAllFindings(true);
+      window.print();
+    }}
+    document.addEventListener('click', function(event) {{
+      var button = event.target.closest('[data-copy-target]');
+      if (!button) {{ return; }}
+      copyTextFromSelector(button.getAttribute('data-copy-target'));
+    }});
+    window.addEventListener('beforeprint', function() {{ setAllFindings(true); }});
+  </script>
 </body>
 </html>
 """
 
 
-def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> str:
+def _html_policy_sections(
+    report_items: list[PolicyDiff],
+    notes: dict[str, dict[str, str]],
+    title_a: str,
+    title_b: str,
+) -> str:
+    grouped: dict[str, list[PolicyDiff]] = {}
+    for item in report_items:
+        status = normalize_review_status(notes.get(item.key, {}).get("status", "Pending Review"))
+        grouped.setdefault(status, []).append(item)
+
+    if not grouped:
+        return ""
+
+    ordered_statuses = [status for status in REVIEW_STATUSES if status in grouped]
+    ordered_statuses.extend(sorted(status for status in grouped if status not in ordered_statuses))
+
+    nav = "".join(
+        f'<a class="status-link" href="#{_anchor_id(status)}">{escape(status)} '
+        f'<span class="status-count">{len(grouped[status])}</span></a>'
+        for status in ordered_statuses
+    )
+    sections = []
+    index = 0
+    for status in ordered_statuses:
+        items = grouped[status]
+        cards = []
+        for item in items:
+            index += 1
+            cards.append(_html_policy_section(item, notes, title_a, title_b, index))
+        sections.append(
+            f'<section class="status-section" id="{_anchor_id(status)}">'
+            f'<div class="status-heading"><h2>{escape(status)}</h2><span class="badge badge-status-unchanged">{len(items)} item(s)</span></div>'
+            f'{"".join(cards)}</section>'
+        )
+
+    return (
+        '<div class="report-toolbar">'
+        f'<div class="status-nav">{nav}</div>'
+        '<div class="toolbar-actions">'
+        '<button class="report-button" type="button" onclick="setAllFindings(true)">Expand All</button>'
+        '<button class="report-button" type="button" onclick="setAllFindings(false)">Collapse All</button>'
+        '</div>'
+        '</div>'
+        f'{"".join(sections)}'
+    )
+
+
+def _html_status_overview(
+    report_items: list[PolicyDiff],
+    notes: dict[str, dict[str, str]],
+) -> str:
+    counts: dict[str, int] = {}
+    for item in report_items:
+        status = normalize_review_status(notes.get(item.key, {}).get("status", "Pending Review"))
+        counts[status] = counts.get(status, 0) + 1
+    if not counts:
+        return ""
+    ordered = [status for status in REVIEW_STATUSES if status in counts]
+    ordered.extend(sorted(status for status in counts if status not in ordered))
+    pills = "".join(
+        f'<a class="status-pill" href="#{_anchor_id(status)}">{escape(status)} <span class="count">{counts[status]}</span></a>'
+        for status in ordered
+    )
+    return f'<nav class="status-overview" aria-label="Review Status Summary">{pills}</nav>'
+
+
+def _executive_verdict(
+    summary: dict[str, int],
+    risks: dict[str, int],
+    report_items: list[PolicyDiff],
+    notes: dict[str, dict[str, str]],
+) -> str:
+    if summary["actionable"] == 0:
+        return "No actionable differences were detected in this comparison."
+
+    review_counts: dict[str, int] = {}
+    for item in report_items:
+        review_status = normalize_review_status(notes.get(item.key, {}).get("status", "Pending Review"))
+        review_counts[review_status] = review_counts.get(review_status, 0) + 1
+
+    directional_parts = [
+        f"{count} {status}"
+        for status, count in review_counts.items()
+        if status in {"Make Changes to A", "Make Changes to B", "Remove From A", "Remove From B"}
+    ]
+    review_clause = ", ".join(directional_parts[:3])
+    if not review_clause:
+        review_clause = f"{summary['unreviewed']} pending review"
+
+    risk_bits = []
+    if risks.get("Security", 0):
+        risk_bits.append(f"{risks['Security']} security-impacting")
+    if risks.get("Protection", 0):
+        risk_bits.append(f"{risks['Protection']} protection-impacting")
+    risk_clause = f" Includes {', '.join(risk_bits)} finding(s)." if risk_bits else ""
+    return f"{summary['actionable']} actionable finding(s): {review_clause}.{risk_clause}"
+
+
+def _anchor_id(value: str) -> str:
+    slug = "".join(ch if ch.isalnum() else "-" for ch in value.casefold()).strip("-")
+    return f"review-{slug or 'section'}"
+
+
+def _html_policy_section(
+    item: PolicyDiff,
+    notes: dict[str, dict[str, str]],
+    title_a: str,
+    title_b: str,
+    index: int,
+) -> str:
     name = item.policy_b.name if item.policy_b else (item.policy_a.name if item.policy_a else "Unknown")
     review = notes.get(item.key, {})
     review_status = normalize_review_status(review.get("status", "Pending Review"))
@@ -376,23 +587,48 @@ def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> 
 
     attr_html = "".join(f'<div class="attr"><strong>{escape(k)}:</strong> {escape(v)}</div>' for k, v in attrs)
     changes_html = "".join(f"<li>{escape(c)}</li>" for c in changes)
+    action_plan_html = _review_action_plan_html(item, review_status, title_a, title_b)
+    direction_note_html = "" if action_plan_html else _review_direction_note_html(review_status)
     remediation_html = _remediation_html(item)
+    summary_bits = [
+        ("Review", review_status),
+        ("Risk", risk_tag(item)),
+        ("State", f"{item.state_a or 'Not present'} -> {item.state_b or 'Not present'}"),
+    ]
+    if changes:
+        summary_bits.append(("Delta", changes[0]))
+    summary_html = "".join(
+        f'<span><strong>{escape(label)}:</strong> {escape(value)}</span>'
+        for label, value in summary_bits
+    )
+    review_decision_html = _review_decision_html(review, review_status)
 
     note_html = _review_html(review)
     evidence_html = _evidence_html(item.supporting_evidence)
 
     return f"""
-<div class="policy-card">
-  <div class="policy-header">
-    <span class="policy-name">{escape(name)}</span>
+<details class="policy-card" id="finding-{index}">
+  <summary class="policy-header">
+    <span class="policy-heading">
+      <span class="policy-name">{escape(name)}</span>
+      <span class="policy-summary">{summary_html}</span>
+    </span>
     <span class="badge {escape(status_cls)}">{escape(status_label)}</span>
-  </div>
+  </summary>
   <div class="policy-body">
+    <div class="finding-tools">
+      <button class="report-button" type="button" data-copy-target="#finding-{index}">Copy Finding</button>
+      <button class="report-button" type="button" data-copy-target="#finding-{index} .action-plan">Copy Action Plan</button>
+    </div>
+    <p class="section-title">Reviewer Decision</p>
+    {review_decision_html}
     <div class="status-strip">
       <div class="strip-cell"><span>Status</span><strong>{escape(status_label)}</strong></div>
       <div class="strip-cell"><span>State</span><strong>{escape(item.state_a or 'Not present')} &rarr; {escape(item.state_b or 'Not present')}</strong></div>
     </div>
     <div class="attrs">{attr_html}</div>
+    {action_plan_html}
+    {direction_note_html}
     <p class="section-title">Actual Delta</p>
     <div class="delta">
       <ul>{changes_html}</ul>
@@ -400,13 +636,13 @@ def _html_policy_section(item: PolicyDiff, notes: dict[str, dict[str, str]]) -> 
     {remediation_html}
     <p class="section-title">Compared Values</p>
     <div class="compare-grid">
-      {_side_card_html("Backup A", item.policy_a, "Not present in Backup A.", "a")}
-      {_side_card_html("Backup B", item.policy_b, "Not present in Backup B.", "b")}
+      {_side_card_html("Backup A", item.policy_a, "Not present in Backup A.", "a", item.policy_b)}
+      {_side_card_html("Backup B", item.policy_b, "Not present in Backup B.", "b", item.policy_a)}
     </div>
     {evidence_html}
     {note_html}
   </div>
-</div>
+</details>
 """
 
 
@@ -630,6 +866,124 @@ def _remediation_html(item: PolicyDiff) -> str:
     )
 
 
+def _review_decision_html(review: dict[str, str], review_status: str) -> str:
+    priority = review.get("priority", "Normal").strip() or "Normal"
+    owner = review.get("owner", "").strip() or "Unassigned"
+    ticket = review.get("ticket", "").strip() or "Not linked"
+    tags = review.get("tags", "").strip() or "None"
+    return (
+        '<div class="review-decision">'
+        f'<div class="decision-cell"><span>Status</span><strong>{escape(review_status)}</strong></div>'
+        f'<div class="decision-cell"><span>Priority</span><strong>{escape(priority)}</strong></div>'
+        f'<div class="decision-cell"><span>Owner</span><strong>{escape(owner)}</strong></div>'
+        f'<div class="decision-cell"><span>Ticket / Tags</span><strong>{escape(ticket)} / {escape(tags)}</strong></div>'
+        '</div>'
+    )
+
+
+def _review_action_plan_html(item: PolicyDiff, review_status: str, title_a: str, title_b: str) -> str:
+    plan = _review_action_plan(item, review_status, title_a, title_b)
+    if plan is None:
+        return ""
+
+    (
+        title,
+        lead,
+        action_label,
+        target_label,
+        source_label,
+        desired_title,
+        desired_policy,
+        current_title,
+        current_policy,
+    ) = plan
+    desired_html = _side_card_html(desired_title, desired_policy, "No desired source settings were captured.", "b", current_policy)
+    current_html = ""
+    if current_title:
+        current_html = _side_card_html(current_title, current_policy, "This item is not currently present.", "a", desired_policy)
+
+    return (
+        '<p class="section-title">Review Action Plan</p>'
+        '<div class="action-plan">'
+        f'<div class="action-title">{escape(title)}</div>'
+        f'<div class="action-lead">{escape(lead)}</div>'
+        '<div class="action-fields">'
+        f'<div class="action-field"><span>Action</span><strong>{escape(action_label)}</strong></div>'
+        f'<div class="action-field"><span>Target</span><strong>{escape(target_label)}</strong></div>'
+        f'<div class="action-field"><span>Align With</span><strong>{escape(source_label)}</strong></div>'
+        f'<div class="action-field"><span>Review Status</span><strong>{escape(review_status)}</strong></div>'
+        '</div>'
+        f'<div class="action-stack">{desired_html}{current_html}</div>'
+        '</div>'
+    )
+
+
+def _review_action_plan(item: PolicyDiff, review_status: str, title_a: str, title_b: str):
+    name = item.policy_b.name if item.policy_b else (item.policy_a.name if item.policy_a else item.key)
+    if review_status == "Make Changes to A":
+        return (
+            f"Update {name} in Backup A",
+            "Apply the Backup B configuration below to Backup A.",
+            "Apply settings",
+            f"Backup A ({title_a})",
+            f"Backup B ({title_b})",
+            f"Settings to apply to Backup A ({title_a}) to align with Backup B ({title_b})",
+            item.policy_b,
+            f"Current settings in Backup A ({title_a})",
+            item.policy_a,
+        )
+    if review_status == "Make Changes to B":
+        return (
+            f"Update {name} in Backup B",
+            "Apply the Backup A configuration below to Backup B.",
+            "Apply settings",
+            f"Backup B ({title_b})",
+            f"Backup A ({title_a})",
+            f"Settings to apply to Backup B ({title_b}) to align with Backup A ({title_a})",
+            item.policy_a,
+            f"Current settings in Backup B ({title_b})",
+            item.policy_b,
+        )
+    if review_status == "Remove From A":
+        return (
+            f"Remove {name} from Backup A",
+            "Remove or unconfigure the item shown below from Backup A.",
+            "Remove setting",
+            f"Backup A ({title_a})",
+            "No source backup required",
+            f"Settings currently in Backup A ({title_a})",
+            item.policy_a,
+            "",
+            None,
+        )
+    if review_status == "Remove From B":
+        return (
+            f"Remove {name} from Backup B",
+            "Remove or unconfigure the item shown below from Backup B.",
+            "Remove setting",
+            f"Backup B ({title_b})",
+            "No source backup required",
+            f"Settings currently in Backup B ({title_b})",
+            item.policy_b,
+            "",
+            None,
+        )
+    return None
+
+
+def _review_direction_note_html(review_status: str) -> str:
+    if review_status in NON_ACTIONABLE_REVIEW_STATUSES:
+        return ""
+    if review_status == "Pending Review":
+        text = "This finding is still pending review. Select a directional review status before using it as an implementation plan."
+    else:
+        text = (
+            f"{review_status} is a review state, not an implementation direction. "
+            "Set this finding to Make Changes to A, Make Changes to B, Remove From A, or Remove From B to produce exact target/source instructions."
+        )
+    return f'<div class="direction-note">{escape(text)}</div>'
+
+
 def _policy_type(item: PolicyDiff) -> str:
     if item.policy_b:
         return item.policy_b.policy_type
@@ -646,16 +1000,28 @@ def _status_label(status: str) -> str:
     }.get(status, status)
 
 
-def _side_card_html(title: str, policy, missing_text: str, side: str) -> str:
+def _side_card_html(title: str, policy, missing_text: str, side: str, peer_policy=None) -> str:
     if policy is None:
         body = f"<p>{escape(missing_text)}</p>"
     else:
         sections = _split_preference_sections(policy.settings or [])
-        properties_html = _settings_section_html("Properties", sections["properties"])
-        common_html = _settings_section_html("Common Options", sections["common"])
-        targeting_html = _targeting_section_html(sections["targeting"])
+        peer_sections = _split_preference_sections(peer_policy.settings or []) if peer_policy else None
+        properties_html = _settings_section_html(
+            "Properties",
+            sections["properties"],
+            peer_sections["properties"] if peer_sections else None,
+        )
+        common_html = _settings_section_html(
+            "Common Options",
+            sections["common"],
+            peer_sections["common"] if peer_sections else None,
+        )
+        targeting_html = _targeting_section_html(
+            sections["targeting"],
+            peer_sections["targeting"] if peer_sections else None,
+        )
         if not (properties_html or common_html or targeting_html):
-            properties_html = "<p>No configured value details were found.</p>"
+            properties_html = "<p>No additional configured value details were captured for this policy type.</p>"
         body = (
             f'<div class="attr"><strong>State:</strong> {escape(policy.state or "Not reported")}</div>'
             f'<div class="attr"><strong>Category:</strong> {escape(policy.category or "Not reported")}</div>'
@@ -686,38 +1052,62 @@ def _split_preference_sections(settings: list[str]) -> dict[str, list[str]]:
     return sections
 
 
-def _settings_section_html(title: str, settings: list[str]) -> str:
+def _settings_section_html(title: str, settings: list[str], peer_settings: list[str] | None = None) -> str:
     if not settings:
         return ""
-    rows = "".join(_kv_row_html(setting) for setting in settings)
+    peer_normalized = {_normalize_setting_for_diff(setting) for setting in (peer_settings or [])}
+    rows = "".join(
+        _kv_row_html(
+            setting,
+            changed=peer_settings is not None and _normalize_setting_for_diff(setting) not in peer_normalized,
+        )
+        for setting in settings
+    )
     return f'<p class="section-title">{escape(title)}</p><table class="kv">{rows}</table>'
 
 
-def _kv_row_html(setting: str) -> str:
+def _kv_row_html(setting: str, changed: bool = False) -> str:
     key, value = _split_setting_line(setting)
+    class_attr = ' class="kv-diff"' if changed else ""
     if not value:
-        return f'<tr><td colspan="2" class="kv-value"><strong>{escape(key)}</strong></td></tr>'
+        return f'<tr{class_attr}><td colspan="2" class="kv-value"><strong>{escape(key)}</strong></td></tr>'
     return (
-        f'<tr><td class="kv-key">{escape(key)}</td>'
+        f'<tr{class_attr}><td class="kv-key">{escape(key)}</td>'
         f'<td class="kv-value">{escape(value)}</td></tr>'
     )
 
 
-def _targeting_section_html(rules: list[str]) -> str:
+def _targeting_section_html(rules: list[str], peer_rules: list[str] | None = None) -> str:
     if not rules:
         return ""
     cards: list[str] = []
     current_title = ""
     current_rows: list[str] = []
+    peer_rule_set = {_normalize_setting_for_diff(rule) for rule in (peer_rules or [])}
 
     def flush() -> None:
         nonlocal current_title, current_rows
         if not current_title and not current_rows:
             return
         title = current_title or "Targeting Rule"
-        rows = "".join(_kv_row_html(row.strip()) for row in current_rows if row.strip())
+        changed = (
+            peer_rules is not None
+            and (
+                _normalize_setting_for_diff(current_title) not in peer_rule_set
+                or any(_normalize_setting_for_diff(row) not in peer_rule_set for row in current_rows if row.strip())
+            )
+        )
+        rows = "".join(
+            _kv_row_html(
+                row.strip(),
+                changed=peer_rules is not None and _normalize_setting_for_diff(row) not in peer_rule_set,
+            )
+            for row in current_rows
+            if row.strip()
+        )
+        diff_class = " diff" if changed else ""
         cards.append(
-            f'<div class="ilt-card"><div class="ilt-title">{escape(title)}</div>'
+            f'<div class="ilt-card{diff_class}"><div class="ilt-title">{escape(title)}</div>'
             f'<table class="kv">{rows}</table></div>'
         )
         current_title = ""
@@ -732,7 +1122,18 @@ def _targeting_section_html(rules: list[str]) -> str:
             current_rows.append(clean)
 
     flush()
+    if len(cards) > 1:
+        return (
+            '<details class="targeting-details">'
+            f'<summary>Targeting Information ({len(cards)} rules)</summary>'
+            f'{"".join(cards)}'
+            '</details>'
+        )
     return f'<p class="section-title">Targeting Information</p>{"".join(cards)}'
+
+
+def _normalize_setting_for_diff(setting: str) -> str:
+    return " ".join(setting.strip().casefold().split())
 
 
 def _review_html(review: dict[str, str]) -> str:
@@ -822,7 +1223,7 @@ def _markdown_policy_values(label: str, policy) -> list[str]:
                 lines.append(f"  - {label_text}")
 
     if not any(line.startswith("- Properties:") or line.startswith("- Common") or line.startswith("- Item-Level") for line in lines):
-        lines.append("- Configured values: No configured value details were found.")
+        lines.append("- Configured values: No additional configured value details were captured for this policy type.")
     return lines
 
 

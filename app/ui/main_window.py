@@ -74,6 +74,25 @@ _PAGE_SETTINGS = 4
 _PAGE_NAMES = ["Dashboard", "Backup Library", "Search", "Reports", "Settings"]
 
 
+def _thread_is_running(thread: QThread | None) -> bool:
+    if thread is None:
+        return False
+    try:
+        return bool(thread.isRunning())
+    except RuntimeError:
+        return False
+
+
+def _quit_thread(thread: QThread | None, timeout_ms: int = 1500) -> None:
+    if not _thread_is_running(thread):
+        return
+    try:
+        thread.quit()
+        thread.wait(timeout_ms)
+    except RuntimeError:
+        return
+
+
 class _ScanWorker(QObject):
     finished = Signal(list, float, list, bool)
     progress = Signal(str)
@@ -252,15 +271,15 @@ class MainWindow(QMainWindow):
         self._save_state()
         scan_worker = getattr(self, "_scan_worker", None)
         scan_thread = getattr(self, "_scan_thread", None)
-        if scan_worker and scan_thread and scan_thread.isRunning():
-            scan_worker.cancel()
-            scan_thread.quit()
-            scan_thread.wait(1500)
+        if scan_worker and _thread_is_running(scan_thread):
+            try:
+                scan_worker.cancel()
+            except RuntimeError:
+                pass
+            _quit_thread(scan_thread)
         self.search_page.cancel_current_search()
-        update_thread = getattr(self, "_update_check_thread", None)
-        if update_thread and update_thread.isRunning():
-            update_thread.quit()
-            update_thread.wait(1500)
+        _quit_thread(getattr(self, "_update_check_thread", None))
+        _quit_thread(getattr(self, "_download_thread", None))
         for w in QApplication.instance().topLevelWidgets():
             if w is not self and w.isVisible():
                 w.close()
@@ -462,7 +481,7 @@ class MainWindow(QMainWindow):
     # ── library scan (background thread) ──────────────────────────────────
 
     def _refresh_library(self) -> None:
-        if getattr(self, "_scan_thread", None) and self._scan_thread.isRunning():
+        if _thread_is_running(getattr(self, "_scan_thread", None)):
             _log.debug("Scan already in progress — ignoring duplicate refresh request")
             self.statusBar().showMessage("Library scan already in progress.")
             return
@@ -503,7 +522,7 @@ class MainWindow(QMainWindow):
     def _cancel_library_scan(self) -> None:
         worker = getattr(self, "_scan_worker", None)
         thread = getattr(self, "_scan_thread", None)
-        if not worker or not thread or not thread.isRunning():
+        if not worker or not _thread_is_running(thread):
             return
         worker.cancel()
         self.statusBar().showMessage("Cancelling library scan...")
@@ -621,7 +640,7 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
 
     def _check_for_updates(self, manual: bool) -> None:
-        if getattr(self, "_update_check_thread", None) and self._update_check_thread.isRunning():
+        if _thread_is_running(getattr(self, "_update_check_thread", None)):
             if manual:
                 self.statusBar().showMessage("Update check already in progress.")
             return
@@ -686,7 +705,7 @@ class MainWindow(QMainWindow):
 
     def _start_update_download(self, result: object) -> None:
         """Begin downloading the installer in a background thread."""
-        if getattr(self, "_download_thread", None) and self._download_thread.isRunning():
+        if _thread_is_running(getattr(self, "_download_thread", None)):
             self._toast.info("A download is already in progress.")
             return
 

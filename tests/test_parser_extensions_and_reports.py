@@ -186,6 +186,30 @@ class ReportProfileTests(unittest.TestCase):
         )
 
         self.assertIn("Actual Delta", report)
+        self.assertIn('<header class="cover">', report)
+        self.assertIn("Comparison Report", report)
+        self.assertIn("Print / PDF", report)
+        self.assertIn("Copy Report", report)
+        self.assertIn('class="report-summary-bar"', report)
+        self.assertIn('<div class="summary-chip"><strong>1</strong><span>Compared</span></div>', report)
+        self.assertIn('<details class="diagnostics-details">', report)
+        self.assertIn("Parser Diagnostics Appendix", report)
+        self.assertIn("Review Status Summary", report)
+        self.assertIn("Review Action Plan", report)
+        self.assertIn("Reviewer Decision", report)
+        self.assertIn("Copy Finding", report)
+        self.assertIn("Copy Action Plan", report)
+        self.assertIn('<a class="status-link" href="#review-make-changes-to-a">Make Changes to A', report)
+        self.assertIn('<section class="status-section" id="review-make-changes-to-a">', report)
+        self.assertIn("<details class=\"policy-card\"", report)
+        self.assertIn("Expand All", report)
+        self.assertIn("Collapse All", report)
+        self.assertIn("window.addEventListener('beforeprint'", report)
+        self.assertIn("Update Browser Policy in Backup A", report)
+        self.assertIn('<div class="action-field"><span>Action</span><strong>Apply settings</strong></div>', report)
+        self.assertIn('<div class="action-field"><span>Target</span><strong>Backup A (A)</strong></div>', report)
+        self.assertIn("Settings to apply to Backup A (A) to align with Backup B (B)", report)
+        self.assertIn("Current settings in Backup A (A)", report)
         self.assertIn("Compared Values", report)
         self.assertIn("Backup A", report)
         self.assertIn("Backup B", report)
@@ -211,6 +235,8 @@ class ReportProfileTests(unittest.TestCase):
                 "  Join: AND",
                 "  Type: Match value",
                 "  Value name: AutoAdminLogon",
+                "â€¢ File Match",
+                "  Path: C:\\Temp",
             ],
             policy_type="Preference",
             source="gpreport.xml::Registry",
@@ -231,6 +257,7 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Properties", report)
         self.assertIn("Common Options", report)
         self.assertIn("Targeting Information", report)
+        self.assertIn("targeting-details", report)
         self.assertIn("ilt-card", report)
         self.assertIn("Value name", report)
 
@@ -264,10 +291,19 @@ class ReportProfileTests(unittest.TestCase):
 
         self.assertIn("Remediation", html)
         self.assertIn("Add/Update", html)
+        self.assertIn("kv-diff", html)
         self.assertIn("### Remediation", markdown)
         self.assertIn("Set state to", markdown)
         self.assertIn('"remediation"', json_body)
         self.assertIn('"target": "Backup B"', json_body)
+
+    def test_html_report_warns_when_review_status_is_not_directional(self) -> None:
+        diff = [_diff(name="Escalated Policy")]
+        report = html_report("A", "B", diff, {diff[0].key: {"status": "Escalated"}})
+
+        self.assertIn("Escalated is a review state, not an implementation direction.", report)
+        self.assertIn("Make Changes to A", report)
+        self.assertIn("Remove From B", report)
 
     def test_remediation_updates_matching_setting_labels_instead_of_add_remove_noise(self) -> None:
         policy_a = GpoReportPolicy(

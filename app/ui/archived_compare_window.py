@@ -788,6 +788,7 @@ def _full_finding_detail_html(
     }
     status = str(finding.get("status") or "Unknown")
     review = finding.get("review") if isinstance(finding.get("review"), dict) else {}
+    review_status = normalize_review_status(review.get("status") or "Pending Review")
     changes = [str(c) for c in (finding.get("changes") or []) if c]
     evidence = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
     policy_a = finding.get("policy_a") if isinstance(finding.get("policy_a"), dict) else None
@@ -804,6 +805,9 @@ def _full_finding_detail_html(
             "</div>"
         ),
     ]
+    action_plan = _saved_review_action_plan_html(finding, review_status, backup_a_title, backup_b_title, colors)
+    if action_plan:
+        html.append(action_plan)
     if changes:
         html.append(_summary_card_html("Detected Delta", changes, colors["orange"], colors))
     html.append(
@@ -816,6 +820,56 @@ def _full_finding_detail_html(
         html.append(_summary_card_html("Supporting Evidence", evidence, colors["label"], colors))
     html.append("</div>")
     return "".join(html)
+
+
+def _saved_review_action_plan_html(
+    finding: dict[str, Any],
+    review_status: str,
+    backup_a_title: str,
+    backup_b_title: str,
+    colors: dict[str, str],
+) -> str:
+    policy_a = finding.get("policy_a") if isinstance(finding.get("policy_a"), dict) else None
+    policy_b = finding.get("policy_b") if isinstance(finding.get("policy_b"), dict) else None
+    name = str(
+        (policy_b or {}).get("name")
+        or (policy_a or {}).get("name")
+        or finding.get("name")
+        or finding.get("key")
+        or "Policy"
+    )
+
+    if review_status == "Make Changes to A":
+        title = f"Update {name} in Backup A"
+        lead = "Apply the Backup B configuration below to Backup A."
+        desired = _policy_config_card_html("Settings to apply to Backup A", backup_b_title, policy_b, colors["blue"], colors)
+        current = _policy_config_card_html("Current settings in Backup A", backup_a_title, policy_a, colors["label"], colors)
+    elif review_status == "Make Changes to B":
+        title = f"Update {name} in Backup B"
+        lead = "Apply the Backup A configuration below to Backup B."
+        desired = _policy_config_card_html("Settings to apply to Backup B", backup_a_title, policy_a, colors["blue"], colors)
+        current = _policy_config_card_html("Current settings in Backup B", backup_b_title, policy_b, colors["label"], colors)
+    elif review_status == "Remove From A":
+        title = f"Remove {name} from Backup A"
+        lead = "Remove or unconfigure the item shown below from Backup A."
+        desired = _policy_config_card_html("Settings currently in Backup A", backup_a_title, policy_a, colors["blue"], colors)
+        current = ""
+    elif review_status == "Remove From B":
+        title = f"Remove {name} from Backup B"
+        lead = "Remove or unconfigure the item shown below from Backup B."
+        desired = _policy_config_card_html("Settings currently in Backup B", backup_b_title, policy_b, colors["blue"], colors)
+        current = ""
+    else:
+        return ""
+
+    return (
+        f"<div style='background:{colors['raised']}; border:1px solid {colors['border']};"
+        f" border-left:4px solid {colors['blue']}; padding:12px; margin:0 0 12px 0;'>"
+        f"<div style='color:{colors['blue']}; font-size:11px; font-weight:800; text-transform:uppercase;'>Review Action Plan</div>"
+        f"<div style='font-size:14px; font-weight:800; color:{colors['text']}; margin-top:4px;'>{_esc(title)}</div>"
+        f"<div style='color:{colors['label']}; margin:3px 0 10px 0;'>{_esc(lead)}</div>"
+        f"{desired}{current}</div>"
+    )
 
 
 def _policy_config_card_html(
