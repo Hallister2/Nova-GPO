@@ -258,8 +258,10 @@ class TestReportsPageSmoke(unittest.TestCase):
         record = self._record()
         page = ReportsPage({}, lambda: [], lambda: [])
         exported: list[list[str]] = []
+        exported_xlsx: list[list[str]] = []
         regenerated: list[list[str]] = []
         page.export_compare_archives_html_requested.connect(exported.append)
+        page.export_compare_archives_xlsx_requested.connect(exported_xlsx.append)
         page.regenerate_compare_archives_requested.connect(regenerated.append)
         page.populate_compare_records([record])
 
@@ -285,10 +287,16 @@ class TestReportsPageSmoke(unittest.TestCase):
         select_all.click()
         self.assertTrue(export_selected.isEnabled())
 
-        export_selected.click()
+        export_menu = export_selected.menu()
+        self.assertIsNotNone(export_menu)
+        html_action = next(a for a in export_menu.actions() if a.text() == "Export as HTML")
+        xlsx_action = next(a for a in export_menu.actions() if a.text() == "Export as Excel (XLSX)")
+        html_action.trigger()
+        xlsx_action.trigger()
         regenerate_selected.click()
 
         self.assertEqual(exported, [[record.record_path]])
+        self.assertEqual(exported_xlsx, [[record.record_path]])
         self.assertEqual(regenerated, [[record.record_path]])
         page.close()
 

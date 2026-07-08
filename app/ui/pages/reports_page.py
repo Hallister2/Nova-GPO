@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -31,6 +32,7 @@ class ReportsPage(QWidget):
     open_compare_archive_requested = Signal(str)
     export_compare_archive_html_requested = Signal(str)
     export_compare_archives_html_requested = Signal(list)
+    export_compare_archives_xlsx_requested = Signal(list)
     delete_compare_archive_requested = Signal(str)
     rename_compare_archive_requested = Signal(str, str)   # record_path, new_title
     regenerate_compare_archive_requested = Signal(str)
@@ -161,7 +163,10 @@ class ReportsPage(QWidget):
 
         self._export_selected_btn = QPushButton("Export Selected")
         self._export_selected_btn.setObjectName("GhostButton")
-        self._export_selected_btn.clicked.connect(self._export_selected_records)
+        export_menu = QMenu(self._export_selected_btn)
+        export_menu.addAction("Export as HTML", self._export_selected_html)
+        export_menu.addAction("Export as Excel (XLSX)", self._export_selected_xlsx)
+        self._export_selected_btn.setMenu(export_menu)
 
         self._regenerate_selected_btn = QPushButton("Regenerate Selected")
         self._regenerate_selected_btn.setObjectName("GhostButton")
@@ -218,10 +223,15 @@ class ReportsPage(QWidget):
             self._selected_record_paths.discard(record_path)
         self._update_bulk_toolbar()
 
-    def _export_selected_records(self) -> None:
+    def _export_selected_html(self) -> None:
         selected = self._selected_paths()
         if selected:
             self.export_compare_archives_html_requested.emit(selected)
+
+    def _export_selected_xlsx(self) -> None:
+        selected = self._selected_paths()
+        if selected:
+            self.export_compare_archives_xlsx_requested.emit(selected)
 
     def _regenerate_selected_records(self) -> None:
         selected = self._selected_paths()

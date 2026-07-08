@@ -50,7 +50,15 @@ from app.gpo.archive import archive_backup, restore_archived_backup
 from app.gpo.backup_catalog import BackupCatalogItem, scan_backup_library
 from app.gpo.backup_loader import load_gpo_backup
 from app.gpo.scan_cache import display_scan_time, load_scan_cache, save_scan_cache
-from app.library_store import delete_compare_record, list_compare_records, regenerate_compare_record, rename_compare_record
+from app.library_store import (
+    CompareLibraryRecord,
+    delete_compare_record,
+    list_compare_records,
+    load_compare_record_payload,
+    regenerate_compare_record,
+    rename_compare_record,
+)
+from app.reports.xlsx_report import write_bulk_findings_xlsx
 from app.ui.pages.dashboard_page import DashboardPage
 from app.ui.pages.home_page import HomePage
 from app.ui.pages.reports_page import ReportsPage
@@ -85,12 +93,12 @@ def _thread_is_running(thread: QThread | None) -> bool:
         return False
 
 
-def _safe_export_filename(title: str) -> str:
+def _safe_export_filename(title: str, suffix: str = ".html") -> str:
     stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", title).strip(" ._")
     stem = re.sub(r"\s+", " ", stem)
     if not stem:
         stem = "NovaGPO_Report"
-    return f"{stem[:120]}.html"
+    return f"{stem[:120]}{suffix}"
 
 
 def _unique_export_path(folder: Path, filename: str, used_names: set[str] | None = None) -> Path:
@@ -231,6 +239,29 @@ class _DownloadWorker(QObject):
             return resp.read().decode("utf-8", errors="replace")
 
 
+class _RegenerateWorker(QObject):
+    """Regenerates saved compare archives from their original backup folders."""
+    progress = Signal(str)
+    finished = Signal(int, list)  # (regenerated_count, failure messages)
+
+    def __init__(self, records: list[CompareLibraryRecord]) -> None:
+        super().__init__()
+        self.records = records
+
+    def run(self) -> None:
+        regenerated = 0
+        failures: list[str] = []
+        total = len(self.records)
+        for index, record in enumerate(self.records, start=1):
+            self.progress.emit(f"Regenerating report {index} of {total}: {record.title}")
+            try:
+                regenerate_compare_record(record.record_path)
+                regenerated += 1
+            except Exception as error:
+                failures.append(f"{record.title}: {error}")
+        self.finished.emit(regenerated, failures)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: dict[str, Any]) -> None:
         super().__init__()
@@ -303,6 +334,7 @@ class MainWindow(QMainWindow):
         self.search_page.cancel_current_search()
         _quit_thread(getattr(self, "_update_check_thread", None))
         _quit_thread(getattr(self, "_download_thread", None))
+        _quit_thread(getattr(self, "_regenerate_thread", None))
         for w in QApplication.instance().topLevelWidgets():
             if w is not self and w.isVisible():
                 w.close()
@@ -468,6 +500,7 @@ class MainWindow(QMainWindow):
         self.reports_page.open_compare_archive_requested.connect(self._open_compare_archive)
         self.reports_page.export_compare_archive_html_requested.connect(self._export_compare_archive_html)
         self.reports_page.export_compare_archives_html_requested.connect(self._export_compare_archives_html)
+        self.reports_page.export_compare_archives_xlsx_requested.connect(self._export_compare_archives_xlsx)
         self.reports_page.delete_compare_archive_requested.connect(self._delete_compare_archive)
         self.reports_page.rename_compare_archive_requested.connect(self._rename_compare_archive)
         self.reports_page.regenerate_compare_archive_requested.connect(self._regenerate_compare_archive)
@@ -961,6 +994,58 @@ class MainWindow(QMainWindow):
         else:
             self._toast.success(f"Exported {exported} HTML report(s).")
 
+    def _export_compare_archives_xlsx(self, record_paths: list[str]) -> None:
+        selected = [record for record in self.compare_records if record.record_path in set(record_paths)]
+        if not selected:
+            return
+
+        entries: list[tuple[Any, dict[str, Any]]] = []
+        failures: list[str] = []
+        for record in selected:
+            try:
+                payload = load_compare_record_payload(record.record_path)
+            except Exception as error:
+                failures.append(f"{record.title}: {error}")
+                continue
+            entries.append((record, payload))
+
+        if not entries:
+            QMessageBox.warning(self, "Export Failed", "None of the selected reports could be loaded.")
+            return
+
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        default_name = REPORTS_DIR / _safe_export_filename(
+            f"Nova GPO Findings {datetime.now().strftime('%Y-%m-%d')}",
+            suffix=".xlsx",
+        )
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Excel Findings",
+            str(default_name),
+            "Excel Workbook (*.xlsx);;All Files (*)",
+        )
+        if not destination:
+            return
+
+        destination_path = Path(destination)
+        if destination_path.suffix.lower() != ".xlsx":
+            destination_path = destination_path.with_suffix(".xlsx")
+
+        try:
+            write_bulk_findings_xlsx(destination_path, entries)
+        except Exception as error:
+            QMessageBox.critical(self, "Export Failed", str(error))
+            return
+
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Export Incomplete",
+                f"Exported {len(entries)} report(s) to {destination_path.name}.\n\n" + "\n".join(failures[:8]),
+            )
+        else:
+            self._toast.success(f"Exported {len(entries)} report(s) to {destination_path.name}.")
+
     def _delete_compare_archive(self, record_path: str) -> None:
         answer = QMessageBox.question(
             self,
@@ -1013,6 +1098,10 @@ class MainWindow(QMainWindow):
         if not selected:
             return
 
+        if _thread_is_running(getattr(self, "_regenerate_thread", None)):
+            self.statusBar().showMessage("Report regeneration already in progress.")
+            return
+
         answer = QMessageBox.question(
             self,
             "Regenerate Reports",
@@ -1022,15 +1111,22 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        regenerated = 0
-        failures: list[str] = []
-        for record in selected:
-            try:
-                regenerate_compare_record(record.record_path)
-                regenerated += 1
-            except Exception as error:
-                failures.append(f"{record.title}: {error}")
+        self.statusBar().showMessage(f"Regenerating {len(selected)} report(s)…")
 
+        self._regenerate_thread = QThread(self)
+        self._regenerate_worker = _RegenerateWorker(selected)
+        self._regenerate_worker.moveToThread(self._regenerate_thread)
+        self._regenerate_thread.started.connect(self._regenerate_worker.run)
+        self._regenerate_worker.progress.connect(self.statusBar().showMessage)
+        self._regenerate_worker.finished.connect(self._on_regenerate_archives_finished)
+        self._regenerate_worker.finished.connect(self._regenerate_thread.quit)
+        self._regenerate_worker.finished.connect(self._regenerate_worker.deleteLater)
+        self._regenerate_thread.finished.connect(self._regenerate_thread.deleteLater)
+        self._regenerate_thread.finished.connect(lambda: setattr(self, "_regenerate_thread", None))
+        self._regenerate_thread.finished.connect(lambda: setattr(self, "_regenerate_worker", None))
+        self._regenerate_thread.start()
+
+    def _on_regenerate_archives_finished(self, regenerated: int, failures: list[str]) -> None:
         self._refresh_compare_records()
         if failures:
             QMessageBox.warning(
