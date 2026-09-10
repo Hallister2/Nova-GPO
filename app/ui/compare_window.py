@@ -67,7 +67,7 @@ def _html_theme(t: dict) -> dict:
         h = h.lstrip("#")
         return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
-    s, d, o = _rgb(t["success"]), _rgb(t["danger"]), _rgb(t["orange"])
+    s, d, o, b = _rgb(t["success"]), _rgb(t["danger"]), _rgb(t["orange"]), _rgb(t["blue"])
     return {
         "code_bg":          t["app"],
         "card_bg":          t["panel"],
@@ -80,6 +80,7 @@ def _html_theme(t: dict) -> dict:
         "blue":             t["blue"],
         "added_bg":         f"rgba({s[0]},{s[1]},{s[2]},0.18)",
         "removed_bg":       f"rgba({d[0]},{d[1]},{d[2]},0.18)",
+        "diff_bg":          f"rgba({b[0]},{b[1]},{b[2]},0.16)",
         "status_added":     f"rgba({s[0]},{s[1]},{s[2]},0.18)",
         "status_removed":   f"rgba({d[0]},{d[1]},{d[2]},0.18)",
         "status_changed":   f"rgba({o[0]},{o[1]},{o[2]},0.18)",
@@ -114,6 +115,7 @@ class CompareWindow(QDialog):
         self.current_review_key = ""
         self.loading_review = False
         self.expanded_key = ""
+        self._changed_only = True
         self.review_status: QComboBox | None = None
         self.review_priority: QComboBox | None = None
         self.review_owner_box: QLineEdit | None = None
@@ -186,7 +188,7 @@ class CompareWindow(QDialog):
         title = QLabel("Compare Group Policy Backups")
         title.setObjectName("Title")
 
-        subtitle = QLabel(f"Backup A: {self.title_a}\nBackup B: {self.title_b}")
+        subtitle = QLabel(f"(A) {self.title_a}\n(B) {self.title_b}")
         subtitle.setObjectName("Muted")
 
         self.executive_summary_label = QLabel(_compact_summary(self.diff_items))
@@ -253,6 +255,13 @@ class CompareWindow(QDialog):
         self.actionable_only.setObjectName("Muted")
         self.actionable_only.setChecked(True)
 
+        self.changed_only_toggle = QCheckBox("Changed fields only")
+        self.changed_only_toggle.setObjectName("Muted")
+        self.changed_only_toggle.setChecked(True)
+        self.changed_only_toggle.setToolTip(
+            "In the expanded detail view, hide property rows that are identical on both sides."
+        )
+
         self.clear_button = QPushButton("Clear Filters")
         self.clear_button.setObjectName("GhostButton")
 
@@ -268,6 +277,7 @@ class CompareWindow(QDialog):
         layout.addWidget(self.review_filter)
         layout.addWidget(self.priority_filter)
         layout.addWidget(self.actionable_only)
+        layout.addWidget(self.changed_only_toggle)
         layout.addWidget(self.clear_button)
         layout.addWidget(self.result_count)
         layout.addWidget(self.review_progress_label)
@@ -284,6 +294,7 @@ class CompareWindow(QDialog):
         self.review_filter.currentTextChanged.connect(self._apply_filters)
         self.priority_filter.currentTextChanged.connect(self._apply_filters)
         self.actionable_only.stateChanged.connect(self._apply_filters)
+        self.changed_only_toggle.stateChanged.connect(self._toggle_changed_only)
         self.clear_button.clicked.connect(self._clear_filters)
 
         return panel
@@ -386,6 +397,10 @@ class CompareWindow(QDialog):
 
         self.filtered_items = filtered_items
         self._visible_count = _PAGE_SIZE
+        self._populate_accordion(self.filtered_items)
+
+    def _toggle_changed_only(self) -> None:
+        self._changed_only = self.changed_only_toggle.isChecked()
         self._populate_accordion(self.filtered_items)
 
     def _populate_accordion(self, items: list[PolicyDiff]) -> None:
@@ -624,10 +639,10 @@ class CompareWindow(QDialog):
 
     def _change_summary_text(self, item: PolicyDiff) -> str:
         if item.status == "Added":
-            return "This policy exists in Backup B but was not present in Backup A."
+            return f"This policy exists in {self.title_b} but was not present in {self.title_a}."
 
         if item.status == "Removed":
-            return "This policy existed in Backup A but is not present in Backup B."
+            return f"This policy existed in {self.title_a} but is not present in {self.title_b}."
 
         if item.status == "Different":
             return "This policy exists in both backups, but one or more reported values differ."
@@ -678,9 +693,9 @@ class CompareWindow(QDialog):
             lambda _: QTimer.singleShot(0, self._adjust_expanded_detail_height)
         )
 
-        open_a_btn = QPushButton("Open Backup A", left)
+        open_a_btn = QPushButton(f"Open (A) {self.title_a}", left)
         open_a_btn.setObjectName("GhostButton")
-        open_b_btn = QPushButton("Open Backup B", left)
+        open_b_btn = QPushButton(f"Open (B) {self.title_b}", left)
         open_b_btn.setObjectName("GhostButton")
         open_a_btn.clicked.connect(lambda: self._open_backup_in_view(self.backup_a))
         open_b_btn.clicked.connect(lambda: self._open_backup_in_view(self.backup_b))
@@ -697,11 +712,11 @@ class CompareWindow(QDialog):
 
         copy_properties_btn = QPushButton("Copy Properties", left)
         copy_properties_btn.setObjectName("GhostButton")
-        copy_properties_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "properties")))
+        copy_properties_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "properties", self.title_a, self.title_b)))
 
         copy_targeting_btn = QPushButton("Copy Targeting", left)
         copy_targeting_btn.setObjectName("GhostButton")
-        copy_targeting_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "targeting")))
+        copy_targeting_btn.clicked.connect(lambda: QApplication.clipboard().setText(_copy_section_text(item, "targeting", self.title_a, self.title_b)))
 
         copy_row = QHBoxLayout()
         copy_row.setSpacing(8)
@@ -868,7 +883,7 @@ class CompareWindow(QDialog):
     </tr>
   </table>
 
-  {_side_by_side_html(item, t)}
+  {_side_by_side_html(item, t, self.title_a, self.title_b, self._changed_only)}
 
   <p style="font-weight:800; font-size:12px; color:{t['label']}; margin:0 0 6px 0;
      padding:5px 10px; border-left:3px solid {t['label']}; background:{t['code_bg']};
@@ -1277,8 +1292,8 @@ def _review_summary_rows(item: PolicyDiff, review: dict[str, str]) -> list[tuple
     return [
         ("Changed Value", _short_cell(changed_value or _status_label(item.status), 72)),
         ("Targeting", targeting),
-        ("Action", action),
-        ("Impact", impact),
+        ("GPP Action", action),
+        ("Review Focus", impact),
         ("Review", normalize_review_status(review.get("status", "Pending Review"))),
     ]
 
@@ -1332,7 +1347,7 @@ def _first_setting_value(settings: list[str], label: str) -> str:
     return ""
 
 
-def _copy_section_text(item: PolicyDiff, section: str) -> str:
+def _copy_section_text(item: PolicyDiff, section: str, title_a: str, title_b: str) -> str:
     def policy_lines(label: str, policy) -> list[str]:
         if policy is None:
             return [f"{label}: Not present"]
@@ -1340,7 +1355,7 @@ def _copy_section_text(item: PolicyDiff, section: str) -> str:
         lines = sections.get(section, [])
         return [f"{label}:"] + (lines if lines else ["No values"])
 
-    return "\n".join(policy_lines("Backup A", item.policy_a) + [""] + policy_lines("Backup B", item.policy_b))
+    return "\n".join(policy_lines(f"(A) {title_a}", item.policy_a) + [""] + policy_lines(f"(B) {title_b}", item.policy_b))
 
 
 def _status_label(status: str) -> str:
@@ -1451,7 +1466,7 @@ def _configured_html(policy, missing_text: str, item: PolicyDiff | None, t: dict
     return html
 
 
-def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
+def _side_by_side_html(item: PolicyDiff, t: dict, title_a: str, title_b: str, changed_only: bool = False) -> str:
     """Document-style two-column comparison: Path / Settings / State / Additional info / Targeting."""
     border  = t["border"]
     bg      = t["code_bg"]
@@ -1460,9 +1475,14 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
     orange  = t["orange"]
     success = t["success"]
     danger  = t["danger"]
+    blue    = t["blue"]
+    diff_bg = t["diff_bg"]
 
     policy_a = item.policy_a
     policy_b = item.policy_b
+    name_differs = bool(
+        policy_a and policy_b and _norm(policy_a.name or "") != _norm(policy_b.name or "")
+    )
 
     # ── per-side helpers ──────────────────────────────────────────────────────
     def policy_path(policy) -> str:
@@ -1502,19 +1522,40 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
             f"</div>"
         )
 
-    def settings_body(settings: list[str], own_norms: set, other_norms: set, added_side: bool) -> str:
+    def diff_value_html(value: str, differs: bool, size: str = "12px") -> str:
+        if not differs:
+            return f"<span style='color:{text}; font-size:{size}; font-weight:700;'>{escape(value)}</span>"
+        return (
+            f"<span style='color:{blue}; background:{diff_bg}; font-size:{size}; font-weight:800;"
+            f" padding:1px 7px; border-radius:3px; display:inline-block;'>{escape(value)}</span>"
+        )
+
+    def settings_body(settings: list[str], other_norms: set, peer_present: bool) -> str:
         if not settings:
             return f"<span style='color:{lbl}; font-style:italic;'>None available</span>"
         rows = []
+        hidden = 0
         for s in settings:
             n = _norm(s)
             key, value = _split_setting_pair(s)
-            if n not in other_norms:
-                color = success if added_side else danger
-                rows.append(_kv_row_html(key, value, t, color))
+            differs = peer_present and n not in other_norms
+            if changed_only and peer_present and not differs:
+                hidden += 1
+                continue
+            if differs:
+                rows.append(_kv_row_html(key, value, t, blue, row_bg=diff_bg))
             else:
                 rows.append(_kv_row_html(key, value, t, text))
-        return _kv_table_html(rows, t)
+        if not rows:
+            return f"<span style='color:{lbl}; font-style:italic;'>No differences on this side.</span>"
+        html = _kv_table_html(rows, t)
+        if changed_only and hidden:
+            html += (
+                f"<p style='color:{lbl}; font-size:11px; margin:4px 0 0 0;'>"
+                f"{hidden} unchanged field(s) hidden. Turn off \"Changed fields only\" to see all."
+                "</p>"
+            )
+        return html
 
     def ilt_body(rules: list[str]) -> str:
         if not rules:
@@ -1532,31 +1573,27 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
 
     def build_cell(policy, settings: list[str], common: list[str], ilt: list[str],
                    state: str, state_differs: bool,
-                   own_norms: set, other_norms: set, is_b_side: bool) -> str:
+                   other_norms: set, peer_present: bool) -> str:
         if policy is None:
             return f"<p style='color:{lbl}; font-style:italic;'>Not present in this backup.</p>"
 
-        state_color = orange if state_differs else text
-        path        = policy_path(policy)
-        name        = policy.name or ""
+        path = policy_path(policy)
+        name = policy.name or ""
 
         html = ""
         if path:
             html += field_html("Path", _pill_html(path, t))
         if name:
-            html += field_html("Setting", f"<div style='color:{text}; font-size:13px; font-weight:700;'>{escape(name)}</div>")
-        html += field_html(
-            "State",
-            f"<span style='color:{state_color}; font-size:12px; font-weight:800;'>{escape(state)}</span>",
-        )
+            html += field_html("Setting", diff_value_html(name, name_differs, "13px"))
+        html += field_html("State", diff_value_html(state, state_differs, "12px"))
         html += field_html(
             "Properties",
-            settings_body(settings, own_norms, other_norms, is_b_side),
+            settings_body(settings, other_norms, peer_present),
         )
         if common:
             html += field_html(
                 "Common Options",
-                settings_body(common, own_norms, other_norms, is_b_side),
+                settings_body(common, other_norms, peer_present),
             )
         if ilt or (item.policy_a and item.policy_b):
             html += field_html("Targeting information", ilt_body(ilt))
@@ -1564,9 +1601,15 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
         return html
 
     cell_a = build_cell(policy_a, reg_a, common_a, ilt_a, state_a, states_differ,
-                        norms_a, norms_b, is_b_side=False)
+                        norms_b, peer_present=policy_b is not None)
     cell_b = build_cell(policy_b, reg_b, common_b, ilt_b, state_b, states_differ,
-                        norms_b, norms_a, is_b_side=True)
+                        norms_a, peer_present=policy_a is not None)
+
+    # Whole item is new on one side (Added/Removed) — wash that side's card with
+    # its status color so it visually matches the status banner above it, distinct
+    # from the per-field blue "differs" highlight used within Different items.
+    wash_a = f" background:{t['removed_bg']}; border-left:3px solid {danger};" if policy_a is not None and policy_b is None else ""
+    wash_b = f" background:{t['added_bg']}; border-left:3px solid {success};" if policy_b is not None and policy_a is None else ""
 
     return (
         f"<table width='100%' cellspacing='0' cellpadding='0'"
@@ -1575,16 +1618,16 @@ def _side_by_side_html(item: PolicyDiff, t: dict) -> str:
         f"<tr>"
         f"<td width='50%' style='padding:8px 14px; background:{bg};"
         f" border-right:1px solid {border}; border-bottom:2px solid {lbl};'>"
-        f"<b style='color:{lbl}; font-size:13px;'>Backup A</b></td>"
+        f"<b style='color:{lbl}; font-size:13px;'>{escape(f'(A) {title_a}')}</b></td>"
         f"<td width='50%' style='padding:8px 14px; background:{bg};"
         f" border-bottom:2px solid {orange};'>"
-        f"<b style='color:{orange}; font-size:13px;'>Backup B</b></td>"
+        f"<b style='color:{orange}; font-size:13px;'>{escape(f'(B) {title_b}')}</b></td>"
         f"</tr>"
         # content row
         f"<tr>"
         f"<td width='50%' style='padding:14px; vertical-align:top;"
-        f" border-right:1px solid {border};'>{cell_a}</td>"
-        f"<td width='50%' style='padding:14px; vertical-align:top;'>{cell_b}</td>"
+        f" border-right:1px solid {border};{wash_a}'>{cell_a}</td>"
+        f"<td width='50%' style='padding:14px; vertical-align:top;{wash_b}'>{cell_b}</td>"
         f"</tr>"
         f"</table>"
     )
@@ -1608,17 +1651,18 @@ def _split_setting_pair(setting: str) -> tuple[str, str]:
     return key.strip(), value.strip()
 
 
-def _kv_row_html(key: str, value: str, t: dict, value_color: str | None = None) -> str:
+def _kv_row_html(key: str, value: str, t: dict, value_color: str | None = None, row_bg: str | None = None) -> str:
     value_color = value_color or t["text"]
+    tr_style = f" style='background:{row_bg};'" if row_bg else ""
     if not key:
         return (
-            "<tr>"
+            f"<tr{tr_style}>"
             f"<td colspan='2' style='padding:3px 6px; color:{value_color}; font-weight:700;'>"
             f"{escape(value)}</td>"
             "</tr>"
         )
     return (
-        "<tr>"
+        f"<tr{tr_style}>"
         f"<td style='padding:3px 8px 3px 0; color:{t['label']}; width:34%; white-space:nowrap;"
         f" font-size:11px; font-weight:700;'>{escape(key)}</td>"
         f"<td style='padding:3px 0; color:{value_color}; font-size:12px;'>{escape(value)}</td>"

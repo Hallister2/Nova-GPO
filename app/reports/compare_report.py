@@ -34,8 +34,8 @@ def csv_report(
     writer = csv.writer(output)
     if profile == "executive":
         writer.writerow(["Metric", "Value"])
-        writer.writerow(["Backup A", title_a])
-        writer.writerow(["Backup B", title_b])
+        writer.writerow(["(A)", title_a])
+        writer.writerow(["(B)", title_b])
         summary = _summary_counts(diff_items, review_notes)
         writer.writerow(["Total compared", summary["total"]])
         writer.writerow(["Actionable findings", summary["actionable"]])
@@ -72,7 +72,7 @@ def csv_report(
         review = (review_notes or {}).get(item.key, {})
         actions = [
             f"{action} {target}: {detail}"
-            for action, target, detail in remediation_steps(item)
+            for action, target, detail in remediation_steps(item, title_a, title_b)
         ]
         writer.writerow([
             name,
@@ -98,6 +98,8 @@ def csv_report(
 def executive_summary(
     diff_items: list[PolicyDiff],
     review_notes: dict[str, dict[str, str]] | None = None,
+    title_a: str = "Backup A",
+    title_b: str = "Backup B",
 ) -> str:
     summary = _summary_counts(diff_items, review_notes)
 
@@ -108,8 +110,8 @@ def executive_summary(
         f"{summary['reviewed']} actionable finding(s) have review status updates.",
         f"{summary['unreviewed']} actionable finding(s) are still pending review.",
         f"{summary['changed']} policies changed between the selected backups.",
-        f"{summary['missing_in_a']} policies are missing in Backup A.",
-        f"{summary['missing_in_b']} policies are missing in Backup B.",
+        f"{summary['missing_in_a']} policies are missing in {title_a}.",
+        f"{summary['missing_in_b']} policies are missing in {title_b}.",
     ]
 
     return "\n".join(lines)
@@ -133,12 +135,12 @@ def markdown_report(
     report.append(f"App Version: {__version__}")
     report.append(f"Profile: {profile}")
     report.append("")
-    report.append(f"Backup A: {title_a}")
-    report.append(f"Backup B: {title_b}")
+    report.append(f"(A) {title_a}")
+    report.append(f"(B) {title_b}")
     report.append("")
     report.append("## Executive Summary")
     report.append("")
-    report.append(executive_summary(diff_items, notes))
+    report.append(executive_summary(diff_items, notes, title_a, title_b))
     report.append("")
     report.extend(_markdown_insights(diff_items))
 
@@ -190,7 +192,7 @@ def markdown_report(
         for change in setting_changes(item):
             report.append(f"- {change}")
 
-        remediation = remediation_steps(item)
+        remediation = remediation_steps(item, title_a, title_b)
         if remediation:
             report.append("")
             report.append("#### Remediation")
@@ -201,9 +203,9 @@ def markdown_report(
         report.append("")
         report.append("#### Compared Values")
         report.append("")
-        report.extend(_markdown_policy_values("Backup A", item.policy_a))
+        report.extend(_markdown_policy_values(f"(A) {title_a}", item.policy_a))
         report.append("")
-        report.extend(_markdown_policy_values("Backup B", item.policy_b))
+        report.extend(_markdown_policy_values(f"(B) {title_b}", item.policy_b))
 
         if item.supporting_evidence:
             report.append("")
@@ -589,7 +591,7 @@ def _html_policy_section(
     changes_html = "".join(f"<li>{escape(c)}</li>" for c in changes)
     action_plan_html = _review_action_plan_html(item, review_status, title_a, title_b)
     direction_note_html = "" if action_plan_html else _review_direction_note_html(review_status)
-    remediation_html = _remediation_html(item)
+    remediation_html = _remediation_html(item, title_a, title_b)
     summary_bits = [
         ("Review", review_status),
         ("Risk", risk_tag(item)),
@@ -636,8 +638,8 @@ def _html_policy_section(
     {remediation_html}
     <p class="section-title">Compared Values</p>
     <div class="compare-grid">
-      {_side_card_html("Backup A", item.policy_a, "Not present in Backup A.", "a", item.policy_b)}
-      {_side_card_html("Backup B", item.policy_b, "Not present in Backup B.", "b", item.policy_a)}
+      {_side_card_html(f"(A) {title_a}", item.policy_a, f"Not present in {title_a}.", "a", item.policy_b)}
+      {_side_card_html(f"(B) {title_b}", item.policy_b, f"Not present in {title_b}.", "b", item.policy_a)}
     </div>
     {evidence_html}
     {note_html}
@@ -646,24 +648,28 @@ def _html_policy_section(
 """
 
 
-def remediation_steps(item: PolicyDiff) -> list[tuple[str, str, str]]:
+def remediation_steps(
+    item: PolicyDiff,
+    title_a: str = "Backup A",
+    title_b: str = "Backup B",
+) -> list[tuple[str, str, str]]:
     """Return concrete remediation rows as (action, target, detail)."""
     if item.policy_a is None and item.policy_b is not None:
-        return _create_policy_steps("Backup A", "Backup B", item.policy_b) + [
-            ("Remove", "Backup B", "Alternative: remove this policy/item from Backup B if Backup A is the desired baseline."),
+        return _create_policy_steps(title_a, title_b, item.policy_b) + [
+            ("Remove", title_b, f"Alternative: remove this policy/item from {title_b} if {title_a} is the desired baseline."),
         ]
 
     if item.policy_a is not None and item.policy_b is None:
-        return _create_policy_steps("Backup B", "Backup A", item.policy_a) + [
-            ("Remove", "Backup A", "Alternative: remove this policy/item from Backup A if Backup B is the desired baseline."),
+        return _create_policy_steps(title_b, title_a, item.policy_a) + [
+            ("Remove", title_a, f"Alternative: remove this policy/item from {title_a} if {title_b} is the desired baseline."),
         ]
 
     if item.policy_a is None or item.policy_b is None:
         return [("Review", "Both", "No comparable policy details are available. Review the source backups manually.")]
 
     steps: list[tuple[str, str, str]] = []
-    steps.extend(_update_policy_steps("Backup B", "Backup A", item.policy_b, item.policy_a))
-    steps.extend(_update_policy_steps("Backup A", "Backup B", item.policy_a, item.policy_b))
+    steps.extend(_update_policy_steps(title_b, title_a, item.policy_b, item.policy_a))
+    steps.extend(_update_policy_steps(title_a, title_b, item.policy_a, item.policy_b))
     if not steps:
         steps.append(("Review", "Both", "No exact setting-level remediation was generated. Review metadata, formatting, or unsupported parser detail."))
     return steps
@@ -848,8 +854,8 @@ def _norm_text(value: str) -> str:
     return " ".join((value or "").casefold().split())
 
 
-def _remediation_html(item: PolicyDiff) -> str:
-    steps = remediation_steps(item)
+def _remediation_html(item: PolicyDiff, title_a: str, title_b: str) -> str:
+    steps = remediation_steps(item, title_a, title_b)
     if not steps:
         return ""
     rows = "".join(
@@ -922,48 +928,48 @@ def _review_action_plan(item: PolicyDiff, review_status: str, title_a: str, titl
     name = item.policy_b.name if item.policy_b else (item.policy_a.name if item.policy_a else item.key)
     if review_status == "Make Changes to A":
         return (
-            f"Update {name} in Backup A",
-            "Apply the Backup B configuration below to Backup A.",
+            f"Update {name} in {title_a}",
+            f"Apply the {title_b} configuration below to {title_a}.",
             "Apply settings",
-            f"Backup A ({title_a})",
-            f"Backup B ({title_b})",
-            f"Settings to apply to Backup A ({title_a}) to align with Backup B ({title_b})",
+            f"(A) {title_a}",
+            f"(B) {title_b}",
+            f"Settings to apply to {title_a} to align with {title_b}",
             item.policy_b,
-            f"Current settings in Backup A ({title_a})",
+            f"Current settings in {title_a}",
             item.policy_a,
         )
     if review_status == "Make Changes to B":
         return (
-            f"Update {name} in Backup B",
-            "Apply the Backup A configuration below to Backup B.",
+            f"Update {name} in {title_b}",
+            f"Apply the {title_a} configuration below to {title_b}.",
             "Apply settings",
-            f"Backup B ({title_b})",
-            f"Backup A ({title_a})",
-            f"Settings to apply to Backup B ({title_b}) to align with Backup A ({title_a})",
+            f"(B) {title_b}",
+            f"(A) {title_a}",
+            f"Settings to apply to {title_b} to align with {title_a}",
             item.policy_a,
-            f"Current settings in Backup B ({title_b})",
+            f"Current settings in {title_b}",
             item.policy_b,
         )
     if review_status == "Remove From A":
         return (
-            f"Remove {name} from Backup A",
-            "Remove or unconfigure the item shown below from Backup A.",
+            f"Remove {name} from {title_a}",
+            f"Remove or unconfigure the item shown below from {title_a}.",
             "Remove setting",
-            f"Backup A ({title_a})",
+            f"(A) {title_a}",
             "No source backup required",
-            f"Settings currently in Backup A ({title_a})",
+            f"Settings currently in {title_a}",
             item.policy_a,
             "",
             None,
         )
     if review_status == "Remove From B":
         return (
-            f"Remove {name} from Backup B",
-            "Remove or unconfigure the item shown below from Backup B.",
+            f"Remove {name} from {title_b}",
+            f"Remove or unconfigure the item shown below from {title_b}.",
             "Remove setting",
-            f"Backup B ({title_b})",
+            f"(B) {title_b}",
             "No source backup required",
-            f"Settings currently in Backup B ({title_b})",
+            f"Settings currently in {title_b}",
             item.policy_b,
             "",
             None,
@@ -1285,7 +1291,7 @@ def json_report(
             },
             "remediation": [
                 {"action": action, "target": target, "detail": detail}
-                for action, target, detail in remediation_steps(item)
+                for action, target, detail in remediation_steps(item, title_a, title_b)
             ],
             "risk": risk_tag(item),
             "supporting_evidence": list(item.supporting_evidence),

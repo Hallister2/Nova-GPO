@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -167,7 +167,20 @@ class ArchivedCompareWindow(QDialog):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Filter findings…")
         self.search_box.setClearButtonEnabled(True)
-        self.search_box.textChanged.connect(self._on_search)
+        self.search_box.textChanged.connect(self._apply_findings_filters)
+
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["All Statuses", "Added", "Different", "Removed"])
+        self.status_filter.currentTextChanged.connect(self._apply_findings_filters)
+
+        self.review_filter = QComboBox()
+        self.review_filter.addItems(["All Reviews", *_REVIEW_STATUSES])
+        self.review_filter.currentTextChanged.connect(self._apply_findings_filters)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.addWidget(self.status_filter, 1)
+        filter_row.addWidget(self.review_filter, 1)
 
         self.list_widget = QListWidget()
         self.list_widget.setWordWrap(True)
@@ -178,6 +191,7 @@ class ArchivedCompareWindow(QDialog):
         list_layout.addWidget(list_title)
         list_layout.addWidget(self.list_hint)
         list_layout.addWidget(self.search_box)
+        list_layout.addLayout(filter_row)
         list_layout.addWidget(self.list_widget, 1)
 
         # ── CENTER: detail ────────────────────────────────────────────────────
@@ -279,20 +293,31 @@ class ArchivedCompareWindow(QDialog):
             item = QListWidgetItem(_finding_label(finding, rs))
             item.setData(Qt.ItemDataRole.UserRole, finding)
             item.setToolTip(str(finding.get("name") or finding.get("key") or ""))
-            _apply_review_style(item, rs)
+            item.setIcon(_review_status_icon(rs))
             self.list_widget.addItem(item)
 
-    def _on_search(self, text: str) -> None:
-        query = text.strip().lower()
-        if query:
-            filtered = [
-                f for f in self._all_findings
-                if query in str(f.get("name", "")).lower()
+    def _apply_findings_filters(self, *_args: Any) -> None:
+        query = self.search_box.text().strip().lower()
+        status_filter = self.status_filter.currentText()
+        review_filter = self.review_filter.currentText()
+
+        filtered = []
+        for f in self._all_findings:
+            if query and not (
+                query in str(f.get("name", "")).lower()
                 or query in str(f.get("scope", "")).lower()
                 or query in str(f.get("status", "")).lower()
-            ]
-        else:
-            filtered = self._all_findings
+            ):
+                continue
+            if status_filter != "All Statuses" and str(f.get("status") or "") != status_filter:
+                continue
+            if review_filter != "All Reviews":
+                key = str(f.get("key", ""))
+                rs = normalize_review_status((self.reviews.get(key) or {}).get("status") or "Pending Review")
+                if rs != review_filter:
+                    continue
+            filtered.append(f)
+
         self.findings = filtered
         self.list_hint.setText(f"{len(filtered)} of {len(self._all_findings)} finding(s)")
         self._populate_list(filtered)
@@ -375,7 +400,7 @@ class ArchivedCompareWindow(QDialog):
         finding = item.data(Qt.ItemDataRole.UserRole)
         rs = self.review_status.currentText()
         item.setText(_finding_label(finding, rs))
-        _apply_review_style(item, rs)
+        item.setIcon(_review_status_icon(rs))
 
     def _save_all(self) -> None:
         self._save_current()
@@ -436,12 +461,30 @@ def _finding_label(finding: dict[str, Any], review_status: str = "") -> str:
     return f"{header}\n{name}\n{rs}"
 
 
-def _apply_review_style(item: QListWidgetItem, review_status: str) -> None:
-    color_hex = _REVIEW_STATUS_COLOR.get(
+_review_status_icon_cache: dict[str, QIcon] = {}
+
+
+def _review_status_icon(review_status: str) -> QIcon:
+    """Small colored swatch marking review disposition (Escalated, Remove From A, etc.).
+    List item text stays plain — the swatch is the only status-color signal here."""
+    color = _REVIEW_STATUS_COLOR.get(
         normalize_review_status(review_status),
         _REVIEW_STATUS_COLOR["Pending Review"],
     )
-    item.setForeground(QColor(color_hex))
+    cached = _review_status_icon_cache.get(color)
+    if cached is not None:
+        return cached
+    pixmap = QPixmap(12, 12)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(color))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(0, 0, 12, 12, 3, 3)
+    painter.end()
+    icon = QIcon(pixmap)
+    _review_status_icon_cache[color] = icon
+    return icon
 
 
 def _finding_meta(finding: dict[str, Any]) -> str:
@@ -578,19 +621,24 @@ def _finding_detail_html(
         f"<td width='50%' style='padding:7px 12px; background:{C_RAISED};"
         f" border-right:1px solid {C_BORDER};'>"
         f"<span style='color:{C_MUTED}; font-size:10px; font-weight:700;"
-        f" text-transform:uppercase; letter-spacing:0.4px;'>Backup A</span><br>"
+        f" text-transform:uppercase; letter-spacing:0.4px;'>(A)</span><br>"
         f"<span style='color:{C_LABEL}; font-size:12px;'>{_esc(backup_a_title)}</span>"
         f"</td>"
         f"<td width='50%' style='padding:7px 12px; background:{C_RAISED};'>"
         f"<span style='color:{C_MUTED}; font-size:10px; font-weight:700;"
-        f" text-transform:uppercase; letter-spacing:0.4px;'>Backup B</span><br>"
+        f" text-transform:uppercase; letter-spacing:0.4px;'>(B)</span><br>"
         f"<span style='color:{C_LABEL}; font-size:12px;'>{_esc(backup_b_title)}</span>"
         f"</td>"
         f"</tr>"
         f"</table>"
     )
 
-    # header banner
+    # header banner — same "Review Action Plan" framing used by the richer detail
+    # layout, so the opening of the page reads consistently either way.
+    parts.append(
+        f"<div style='color:{C_BLUE}; font-size:11px; font-weight:800; text-transform:uppercase;"
+        f" letter-spacing:0.5px; margin:0 0 4px 0;'>Review Action Plan</div>"
+    )
     parts.append(
         f"<p style='color:{header_color}; font-weight:800; font-size:12px;"
         f" margin:0 0 14px 0; text-transform:uppercase; letter-spacing:0.5px;"
@@ -786,36 +834,39 @@ def _full_finding_detail_html(
         "orange": "#FF8A1F",
         "blue": "#82B6FF",
     }
-    status = str(finding.get("status") or "Unknown")
     review = finding.get("review") if isinstance(finding.get("review"), dict) else {}
     review_status = normalize_review_status(review.get("status") or "Pending Review")
-    changes = [str(c) for c in (finding.get("changes") or []) if c]
+    # Display-only substitution: the underlying "changes" strings are generated once at
+    # save time and reused for status parsing elsewhere, so the stored data keeps its
+    # generic "Backup A"/"Backup B" wording — only the rendered copy here shows real names.
+    changes = [
+        str(c).replace("Backup A", backup_a_title).replace("Backup B", backup_b_title)
+        for c in (finding.get("changes") or []) if c
+    ]
     evidence = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
     policy_a = finding.get("policy_a") if isinstance(finding.get("policy_a"), dict) else None
     policy_b = finding.get("policy_b") if isinstance(finding.get("policy_b"), dict) else None
+    explanation = str((policy_b or policy_a or {}).get("explain") or "").strip()
 
-    html = [
-        f"<div style='font-size:13px; line-height:1.55; color:{colors['text']};'>",
-        (
-            f"<div style='background:{colors['raised']}; border:1px solid {colors['border']};"
-            f" border-left:3px solid {colors['orange']}; padding:9px 12px; margin:0 0 12px 0;'>"
-            f"<div style='color:{colors['muted']}; font-size:10px; font-weight:800; text-transform:uppercase;'>Review Context</div>"
-            f"<div style='font-weight:800; color:{colors['text']}; margin-top:2px;'>"
-            f"{_esc(status)} &nbsp;·&nbsp; {_esc(normalize_review_status(review.get('status') or 'Pending Review'))}</div>"
-            "</div>"
-        ),
-    ]
+    html = [f"<div style='font-size:13px; line-height:1.55; color:{colors['text']};'>"]
     action_plan = _saved_review_action_plan_html(finding, review_status, backup_a_title, backup_b_title, colors)
     if action_plan:
         html.append(action_plan)
     if changes:
-        html.append(_summary_card_html("Detected Delta", changes, colors["orange"], colors))
+        html.append(_summary_card_html("Detected Delta", changes, colors["blue"], colors))
+    if explanation:
+        html.append(
+            f"<div style='margin:0 0 12px 0;'><div style='color:{colors['label']}; font-size:11px; font-weight:800;"
+            f" text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;'>Policy Explanation</div>"
+            f"<pre style='white-space:pre-wrap; color:{colors['text']}; background:{colors['raised']};"
+            f" border:1px solid {colors['border']}; padding:8px; margin:0;'>{_esc(explanation)}</pre></div>"
+        )
     html.append(
-        f"<p style='color:{colors['blue']}; font-weight:800; font-size:11px; text-transform:uppercase;"
-        f" letter-spacing:0.5px; margin:14px 0 8px 0;'>Complete configuration data</p>"
+        f"<p style='color:{colors['label']}; font-weight:800; font-size:11px; text-transform:uppercase;"
+        f" letter-spacing:0.5px; margin:14px 0 8px 0;'>Complete configuration data (reference)</p>"
     )
-    html.append(_policy_config_card_html("Backup A", backup_a_title, policy_a, colors["label"], colors))
-    html.append(_policy_config_card_html("Backup B", backup_b_title, policy_b, colors["orange"], colors))
+    html.append(_policy_config_card_html("(A)", backup_a_title, policy_a, colors["label"], colors))
+    html.append(_policy_config_card_html("(B)", backup_b_title, policy_b, colors["orange"], colors))
     if evidence:
         html.append(_summary_card_html("Supporting Evidence", evidence, colors["label"], colors))
     html.append("</div>")
@@ -839,25 +890,28 @@ def _saved_review_action_plan_html(
         or "Policy"
     )
 
+    # Cards are only embedded here when the underlying policy actually has data —
+    # when it's None, "Complete Configuration Data" below already says "not present
+    # in this backup," so re-showing that same empty state here would just repeat it.
     if review_status == "Make Changes to A":
-        title = f"Update {name} in Backup A"
-        lead = "Apply the Backup B configuration below to Backup A."
-        desired = _policy_config_card_html("Settings to apply to Backup A", backup_b_title, policy_b, colors["blue"], colors)
-        current = _policy_config_card_html("Current settings in Backup A", backup_a_title, policy_a, colors["label"], colors)
+        title = f"Update {name} in {backup_a_title}"
+        lead = f"Apply the {backup_b_title} configuration below to {backup_a_title}."
+        desired = _policy_config_card_html(f"Settings to apply to {backup_a_title}", backup_b_title, policy_b, colors["blue"], colors) if policy_b else ""
+        current = _policy_config_card_html("Current settings", backup_a_title, policy_a, colors["label"], colors) if policy_a else ""
     elif review_status == "Make Changes to B":
-        title = f"Update {name} in Backup B"
-        lead = "Apply the Backup A configuration below to Backup B."
-        desired = _policy_config_card_html("Settings to apply to Backup B", backup_a_title, policy_a, colors["blue"], colors)
-        current = _policy_config_card_html("Current settings in Backup B", backup_b_title, policy_b, colors["label"], colors)
+        title = f"Update {name} in {backup_b_title}"
+        lead = f"Apply the {backup_a_title} configuration below to {backup_b_title}."
+        desired = _policy_config_card_html(f"Settings to apply to {backup_b_title}", backup_a_title, policy_a, colors["blue"], colors) if policy_a else ""
+        current = _policy_config_card_html("Current settings", backup_b_title, policy_b, colors["label"], colors) if policy_b else ""
     elif review_status == "Remove From A":
-        title = f"Remove {name} from Backup A"
-        lead = "Remove or unconfigure the item shown below from Backup A."
-        desired = _policy_config_card_html("Settings currently in Backup A", backup_a_title, policy_a, colors["blue"], colors)
+        title = f"Remove {name} from {backup_a_title}"
+        lead = f"Remove or unconfigure the item shown below from {backup_a_title}."
+        desired = _policy_config_card_html("Settings currently configured", backup_a_title, policy_a, colors["blue"], colors) if policy_a else ""
         current = ""
     elif review_status == "Remove From B":
-        title = f"Remove {name} from Backup B"
-        lead = "Remove or unconfigure the item shown below from Backup B."
-        desired = _policy_config_card_html("Settings currently in Backup B", backup_b_title, policy_b, colors["blue"], colors)
+        title = f"Remove {name} from {backup_b_title}"
+        lead = f"Remove or unconfigure the item shown below from {backup_b_title}."
+        desired = _policy_config_card_html("Settings currently configured", backup_b_title, policy_b, colors["blue"], colors) if policy_b else ""
         current = ""
     else:
         return ""
@@ -912,14 +966,6 @@ def _policy_config_card_html(
         html.append(_section_table("Common Options", sections["common"], colors))
     if sections["targeting"]:
         html.append(_targeting_cards_html(sections["targeting"], colors))
-    explain = str(policy.get("explain") or "").strip()
-    if explain:
-        html.append(
-            f"<div style='margin-top:10px;'><div style='color:{colors['orange']}; font-size:11px; font-weight:800;"
-            f" text-transform:uppercase;'>Explanation</div>"
-            f"<pre style='white-space:pre-wrap; color:{colors['text']}; background:{colors['raised']};"
-            f" border:1px solid {colors['border']}; padding:8px; margin:5px 0 0 0;'>{_esc(explain)}</pre></div>"
-        )
     html.append("</div>")
     return "".join(html)
 

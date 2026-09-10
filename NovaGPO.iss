@@ -1,6 +1,6 @@
 ﻿#define MyAppName "Nova GPO"
 ; Synced from app\__init__.py by PackageApplication.ps1.
-#define MyAppVersion "0.9.3"
+#define MyAppVersion "0.9.4"
 #define MyAppPublisher "Hallister Labs"
 #define MyAppExeName "Nova GPO.exe"
 
@@ -53,6 +53,7 @@ Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "Launch {#M
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\Hallister Labs\Nova GPO\Runtime"
+
 
 
 

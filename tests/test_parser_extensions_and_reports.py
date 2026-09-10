@@ -207,14 +207,14 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("Expand All", report)
         self.assertIn("Collapse All", report)
         self.assertIn("window.addEventListener('beforeprint'", report)
-        self.assertIn("Update Browser Policy in Backup A", report)
+        self.assertIn("Update Browser Policy in A", report)
         self.assertIn('<div class="action-field"><span>Action</span><strong>Apply settings</strong></div>', report)
-        self.assertIn('<div class="action-field"><span>Target</span><strong>Backup A (A)</strong></div>', report)
-        self.assertIn("Settings to apply to Backup A (A) to align with Backup B (B)", report)
-        self.assertIn("Current settings in Backup A (A)", report)
+        self.assertIn('<div class="action-field"><span>Target</span><strong>(A) A</strong></div>', report)
+        self.assertIn("Settings to apply to A to align with B", report)
+        self.assertIn("Current settings in A", report)
         self.assertIn("Compared Values", report)
-        self.assertIn("Backup A", report)
-        self.assertIn("Backup B", report)
+        self.assertIn('<div class="side-title">(A) A</div>', report)
+        self.assertIn('<div class="side-title">(B) B</div>', report)
         self.assertIn("CHG789", report)
 
     def test_html_report_renders_preference_sections_as_tables_and_targeting_cards(self) -> None:
@@ -297,7 +297,7 @@ class ReportProfileTests(unittest.TestCase):
         self.assertIn("### Remediation", markdown)
         self.assertIn("Set state to", markdown)
         self.assertIn('"remediation"', json_body)
-        self.assertIn('"target": "Backup B"', json_body)
+        self.assertIn('"target": "B"', json_body)
 
     def test_html_report_warns_when_review_status_is_not_directional(self) -> None:
         diff = [_diff(name="Escalated Policy")]

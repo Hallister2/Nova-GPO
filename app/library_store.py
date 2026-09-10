@@ -85,8 +85,8 @@ def save_compare_record(
     markdown_path.write_text(markdown_report, encoding="utf-8")
     json_path.write_text(json_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
 
-    findings = [_item_payload(item, review_notes.get(item.key, {})) for item in actionable_items(diff_items)]
-    inventory = [_item_payload(item, review_notes.get(item.key, {})) for item in diff_items]
+    findings = [_item_payload(item, review_notes.get(item.key, {}), title_a, title_b) for item in actionable_items(diff_items)]
+    inventory = [_item_payload(item, review_notes.get(item.key, {}), title_a, title_b) for item in diff_items]
 
     payload = {
         "record_id": record_id,
@@ -357,8 +357,8 @@ def regenerate_compare_record(record_path: str) -> CompareLibraryRecord:
     markdown_path.write_text(markdown_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
     json_path.write_text(json_report(title_a, title_b, diff_items, review_notes), encoding="utf-8")
 
-    findings = [_item_payload(item, review_notes.get(item.key, {})) for item in actionable_items(diff_items)]
-    inventory = [_item_payload(item, review_notes.get(item.key, {})) for item in diff_items]
+    findings = [_item_payload(item, review_notes.get(item.key, {}), title_a, title_b) for item in actionable_items(diff_items)]
+    inventory = [_item_payload(item, review_notes.get(item.key, {}), title_a, title_b) for item in diff_items]
 
     payload["app_version"] = COMPARE_APP_VERSION
     payload["regenerated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -430,7 +430,7 @@ def _diagnostics(diff_items: list[PolicyDiff]) -> dict[str, Any]:
     return diagnostics_dict(diff_items)
 
 
-def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
+def _item_payload(item: PolicyDiff, review: dict[str, str], title_a: str, title_b: str) -> dict[str, Any]:
     from app.reports.insights import risk_tag
 
     policy = item.policy_b or item.policy_a
@@ -449,7 +449,7 @@ def _item_payload(item: PolicyDiff, review: dict[str, str]) -> dict[str, Any]:
         "changes": setting_changes(item),
         "remediation": [
             {"action": action, "target": target, "detail": detail}
-            for action, target, detail in remediation_steps(item)
+            for action, target, detail in remediation_steps(item, title_a, title_b)
         ],
         "supporting_evidence": list(item.supporting_evidence),
         "review": {
