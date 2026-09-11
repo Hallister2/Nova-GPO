@@ -140,6 +140,7 @@ class CompareWindow(QDialog):
         self._review_save_timer.timeout.connect(self._save_review_for_current_item)
 
         theme_name = settings.get("app", {}).get("theme", "executive_dark")
+        self.theme_name = theme_name
         self._ht = _html_theme(THEMES.get(theme_name, THEMES["executive_dark"]))
 
         self.title_a = self.report_a.name if self.report_a and self.report_a.name else backup_a.name
@@ -1198,7 +1199,7 @@ class CompareWindow(QDialog):
 
     def _open_backup_in_view(self, backup) -> None:
         from app.ui.view_window import ViewWindow
-        win = ViewWindow(backup, self)
+        win = ViewWindow(backup, self, theme_name=self.theme_name)
         win.exec()
 
     def _item_needs_action(self, item: PolicyDiff) -> bool:

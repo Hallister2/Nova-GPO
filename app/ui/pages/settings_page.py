@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -29,6 +29,7 @@ from app import __version__
 from app.core.log import get_logger
 from app.core.settings import CONFIG_DIR, REPORTS_DIR, SETTINGS_PATH, USER_DATA_DIR, save_settings
 from app.gpo.archive import (
+    ArchivedBackup,
     list_archived_backups,
     permanently_delete_archived_backup,
     purge_expired_archives,
@@ -37,6 +38,22 @@ from app.gpo.archive import (
 from app.ui.widgets import badge, badge_item, configure_enterprise_table, readonly_item
 
 _log = get_logger(__name__)
+
+
+class _RecycleBinScanWorker(QObject):
+    finished = Signal(list)
+
+    def __init__(self, roots: list[str]) -> None:
+        super().__init__()
+        self.roots = roots
+
+    def run(self) -> None:
+        try:
+            items = list_archived_backups(self.roots)
+        except Exception as error:
+            _log.warning("Recycle bin scan failed: %s", error, exc_info=True)
+            items = []
+        self.finished.emit(items)
 
 
 class _DroppableTable(QTableWidget):
@@ -81,6 +98,9 @@ class SettingsPage(QWidget):
     def __init__(self, settings: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.settings = settings
+        self._recycle_scan_thread: QThread | None = None
+        self._recycle_scan_worker: _RecycleBinScanWorker | None = None
+        self._recycle_scan_pending_roots: list[str] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 22)
@@ -106,7 +126,36 @@ class SettingsPage(QWidget):
         self._populate_source_table(self.settings_sources_table, roots)
 
     def refresh_recycle_bin(self, roots: list[str]) -> None:
-        items = list_archived_backups(roots)
+        # list_archived_backups() walks every archived folder and parses its
+        # metadata — real filesystem I/O, so it must not run on the UI thread.
+        # If a scan is already in flight, remember the latest roots and re-scan
+        # with those once it finishes, rather than stacking up threads.
+        if self._recycle_scan_thread is not None and self._recycle_scan_thread.isRunning():
+            self._recycle_scan_pending_roots = roots
+            return
+        self._start_recycle_bin_scan(roots)
+
+    def _start_recycle_bin_scan(self, roots: list[str]) -> None:
+        self._recycle_scan_thread = QThread(self)
+        self._recycle_scan_worker = _RecycleBinScanWorker(roots)
+        self._recycle_scan_worker.moveToThread(self._recycle_scan_thread)
+        self._recycle_scan_thread.started.connect(self._recycle_scan_worker.run)
+        self._recycle_scan_worker.finished.connect(self._on_recycle_scan_finished)
+        self._recycle_scan_worker.finished.connect(self._recycle_scan_thread.quit)
+        self._recycle_scan_worker.finished.connect(self._recycle_scan_worker.deleteLater)
+        self._recycle_scan_thread.finished.connect(self._recycle_scan_thread.deleteLater)
+        self._recycle_scan_thread.finished.connect(self._on_recycle_scan_thread_done)
+        self._recycle_scan_thread.start()
+
+    def _on_recycle_scan_thread_done(self) -> None:
+        self._recycle_scan_thread = None
+        self._recycle_scan_worker = None
+        if self._recycle_scan_pending_roots is not None:
+            pending = self._recycle_scan_pending_roots
+            self._recycle_scan_pending_roots = None
+            self._start_recycle_bin_scan(pending)
+
+    def _on_recycle_scan_finished(self, items: list[ArchivedBackup]) -> None:
         self.recycle_table.setSortingEnabled(False)
         self.recycle_table.setRowCount(0)
 

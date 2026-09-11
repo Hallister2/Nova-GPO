@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -11,6 +14,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -35,9 +39,16 @@ class _SearchWorker(QObject):
     finished = Signal(list, str, bool, str)
     progress = Signal(str)
 
-    def __init__(self, roots: list[str], query: str, filters: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        roots: list[str],
+        catalog_items: list[BackupCatalogItem],
+        query: str,
+        filters: dict[str, Any],
+    ) -> None:
         super().__init__()
         self.roots = roots
+        self.catalog_items = catalog_items
         self.query = query
         self.filters = filters
         self._cancel_requested = False
@@ -58,8 +69,13 @@ class _SearchWorker(QObject):
                 field_filter=self.filters["field_filter"],
                 security_only=self.filters["security_only"],
                 exact=self.filters["exact"],
+                include_descriptions=self.filters["include_descriptions"],
                 progress_callback=self.progress.emit,
                 should_cancel=lambda: self._cancel_requested,
+                # Reuses the Backup Library's already-scanned catalog instead
+                # of re-walking every backup folder's filesystem tree again —
+                # the same redundant-I/O pattern fixed in dashboard_page.py.
+                catalog_items=self.catalog_items or None,
             )
         except Exception as error:
             _log.error("Search failed: %s", error, exc_info=True)
@@ -80,6 +96,7 @@ class SearchPage(QWidget):
         super().__init__(parent)
         self.settings = settings
         self._get_backup_roots = get_backup_roots
+        self._catalog_items: list[BackupCatalogItem] = []
         self._search_thread: QThread | None = None
         self._search_worker: _SearchWorker | None = None
 
@@ -117,6 +134,7 @@ class SearchPage(QWidget):
         self.global_search_box.selectAll()
 
     def refresh_source_filter(self, catalog_items: list[BackupCatalogItem]) -> None:
+        self._catalog_items = catalog_items
         previous = self.global_source_filter.currentText()
         self.global_source_filter.blockSignals(True)
         self.global_source_filter.clear()
@@ -196,6 +214,14 @@ class SearchPage(QWidget):
         self.exact_search = QCheckBox("Exact phrase")
         self.exact_search.setObjectName("Muted")
 
+        self.include_descriptions = QCheckBox("Descriptions")
+        self.include_descriptions.setObjectName("Muted")
+        self.include_descriptions.setToolTip(
+            "Also match inside each policy's help text. Off by default — common "
+            "words there (e.g. \"desktop\") otherwise flood results with policies "
+            "that only mention the word in a paragraph of documentation."
+        )
+
         self.search_button = QPushButton("Search")
         self.search_button.setObjectName("PrimaryButton")
         self.search_button.setMinimumWidth(86)
@@ -230,9 +256,16 @@ class SearchPage(QWidget):
         filter_row.addStretch(1)
         filter_row.addWidget(self.security_only)
         filter_row.addWidget(self.exact_search)
+        filter_row.addWidget(self.include_descriptions)
+
+        self.search_hint_label = QLabel("")
+        self.search_hint_label.setObjectName("Muted")
+        self.search_hint_label.setWordWrap(True)
+        self.search_hint_label.setVisible(False)
 
         layout.addLayout(search_row)
         layout.addLayout(filter_row)
+        layout.addWidget(self.search_hint_label)
         return panel
 
     def _build_results_area(self) -> QWidget:
@@ -245,22 +278,69 @@ class SearchPage(QWidget):
         return self.results_area
 
     def _build_results_table(self) -> QTableWidget:
-        self.global_search_table = QTableWidget(0, 8)
+        # Type/Scope/File are still shown in the Result Details panel for the
+        # selected row — dropping them from the table (was 8 columns) is what
+        # stops the table from needing horizontal scroll to compare rows, and
+        # leaves room for Name/Category/Value, the columns that actually vary
+        # row-to-row and that the reader is scanning for.
+        self.global_search_table = QTableWidget(0, 5)
         self.global_search_table.setHorizontalHeaderLabels(
-            ["Source", "Backup", "Type", "Scope", "Name", "Category", "Value", "File"]
+            ["Source", "Backup", "Name", "Category", "Value"]
         )
         configure_enterprise_table(self.global_search_table, row_height=42)
         hdr = self.global_search_table.horizontalHeader()
-        hdr.setStretchLastSection(True)
+        hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        self.global_search_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.global_search_table.customContextMenuRequested.connect(self._on_results_context_menu)
         return self.global_search_table
+
+    def _on_results_context_menu(self, pos) -> None:
+        row = self.global_search_table.rowAt(pos.y())
+        if row < 0:
+            return
+        if row not in {index.row() for index in self.global_search_table.selectedIndexes()}:
+            self.global_search_table.selectRow(row)
+
+        result = self._selected_result()
+        path_item = self.global_search_table.item(row, 1)
+        backup_path = str(path_item.data(Qt.ItemDataRole.UserRole)) if path_item else ""
+
+        menu = QMenu(self)
+        view_action = menu.addAction("View Backup")
+        view_action.setEnabled(bool(backup_path))
+        view_action.triggered.connect(self._open_selected_result)
+
+        menu.addSeparator()
+        copy_value_action = menu.addAction("Copy Value")
+        copy_value_action.setEnabled(bool(result and result.value))
+        copy_value_action.triggered.connect(lambda: self._copy_to_clipboard(result.value if result else ""))
+
+        copy_path_action = menu.addAction("Copy Backup Path")
+        copy_path_action.setEnabled(bool(backup_path))
+        copy_path_action.triggered.connect(lambda: self._copy_to_clipboard(backup_path))
+
+        reveal_action = menu.addAction("Reveal Backup in File Explorer")
+        reveal_action.setEnabled(bool(backup_path))
+        reveal_action.triggered.connect(lambda: self._reveal_in_explorer(backup_path))
+
+        menu.exec(QCursor.pos())
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
+
+    def _reveal_in_explorer(self, backup_path: str) -> None:
+        try:
+            if os.name == "nt":
+                os.startfile(backup_path)  # noqa: S606 — opens Explorer at a known local backup folder
+            else:
+                _log.info("Reveal in File Explorer is only supported on Windows")
+        except OSError as error:
+            _log.warning("Could not open %s in File Explorer: %s", backup_path, error)
 
     def _build_details_panel(self) -> QFrame:
         panel = QFrame()
@@ -330,6 +410,14 @@ class SearchPage(QWidget):
             )
             return
 
+        if not self._catalog_items:
+            self._populate_results([], "")
+            self._set_empty_state(
+                "Backup Library hasn't been scanned yet",
+                "Open Backup Library and click Scan, then come back and search.",
+            )
+            return
+
         filters = {
             "source_filter": self._selected_source_index(),
             "type_filter": self.global_type_filter.currentText(),
@@ -338,11 +426,12 @@ class SearchPage(QWidget):
             "field_filter": self.global_field_filter.currentText(),
             "security_only": self.security_only.isChecked(),
             "exact": self.exact_search.isChecked(),
+            "include_descriptions": self.include_descriptions.isChecked(),
         }
 
         self._set_search_running(True, "Starting search...")
         self._search_thread = QThread(self)
-        self._search_worker = _SearchWorker(roots, query, filters)
+        self._search_worker = _SearchWorker(roots, self._catalog_items, query, filters)
         self._search_worker.moveToThread(self._search_thread)
         self._search_thread.started.connect(self._search_worker.run)
         self._search_worker.progress.connect(self._on_search_progress)
@@ -365,6 +454,7 @@ class SearchPage(QWidget):
         self.global_field_filter.setCurrentIndex(0)
         self.security_only.setChecked(False)
         self.exact_search.setChecked(False)
+        self.include_descriptions.setChecked(False)
         self._populate_results([], "")
         self._set_empty_state("Ready to search", "Enter a term and run a search across the loaded backup sources.")
 
@@ -377,25 +467,38 @@ class SearchPage(QWidget):
             self.global_search_table.insertRow(row)
             self.global_search_table.setItem(row, 0, readonly_item(str(result.source_index), result.backup_path))
             self.global_search_table.setItem(row, 1, readonly_item(result.backup_name, result.backup_path))
-            self.global_search_table.setItem(row, 2, readonly_item(result.result_type))
-            self.global_search_table.setItem(row, 3, readonly_item(result.scope))
-            self.global_search_table.setItem(row, 4, readonly_item(result.name))
-            self.global_search_table.setItem(row, 5, readonly_item(result.category))
-            self.global_search_table.setItem(row, 6, readonly_item(_short_value(result.value)))
-            self.global_search_table.setItem(row, 7, readonly_item(result.source_file or "Backup metadata"))
-            name_item = self.global_search_table.item(row, 4)
-            if name_item:
-                name_item.setData(_RESULT_ROLE, result)
+
+            name_item = readonly_item(result.name)
+            category_item = readonly_item(result.category)
+            value_item = readonly_item(_short_value(result.value))
+            name_item.setData(_RESULT_ROLE, result)
+
+            # Bold whichever field(s) actually contain a search term, so a wall
+            # of similar-looking rows can be scanned instead of clicked one by
+            # one to find out why each is here.
+            for col_item, field_name in ((name_item, "name"), (category_item, "category"), (value_item, "value")):
+                if field_name in result.matched_fields:
+                    bold_font = col_item.font()
+                    bold_font.setBold(True)
+                    col_item.setFont(bold_font)
+
+            self.global_search_table.setItem(row, 2, name_item)
+            self.global_search_table.setItem(row, 3, category_item)
+            self.global_search_table.setItem(row, 4, value_item)
 
         self.global_search_table.setSortingEnabled(True)
         self._update_result_details()
 
         if len(results) >= _SEARCH_LIMIT and query:
             count_text = f"{len(results)}+ results"
+            hint = "Showing the first 1,000 matches. Add search terms, or use the filters above, to narrow further."
             self.global_search_count.setToolTip("Limit reached. Narrow your query to see more targeted results.")
+            self.search_hint_label.setText(hint)
+            self.search_hint_label.setVisible(True)
         else:
             count_text = f"{len(results)} results"
             self.global_search_count.setToolTip("")
+            self.search_hint_label.setVisible(False)
         self.global_search_count.setText(count_text)
 
         if results:
@@ -428,7 +531,7 @@ class SearchPage(QWidget):
         selected_rows = sorted({index.row() for index in self.global_search_table.selectedIndexes()})
         if not selected_rows:
             return None
-        item = self.global_search_table.item(selected_rows[0], 4)
+        item = self.global_search_table.item(selected_rows[0], 2)  # Name column
         result = item.data(_RESULT_ROLE) if item else None
         return result if isinstance(result, SearchResult) else None
 

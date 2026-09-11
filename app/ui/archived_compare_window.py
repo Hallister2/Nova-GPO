@@ -29,6 +29,7 @@ from app.core.settings import REPORTS_DIR
 from app.library_store import load_compare_record_payload, update_compare_record_reviews
 from app.review_status import REVIEW_STATUS_COLORS, REVIEW_STATUSES, normalize_review_status
 from app.ui.branding import app_icon
+from app.ui.styles import THEMES
 from app.ui.widgets import badge
 
 _REVIEW_STATUSES = [
@@ -57,6 +58,25 @@ _REVIEW_PRIORITIES = ["Normal", "Low", "Medium", "High", "Critical"]
 _REVIEW_STATUSES = REVIEW_STATUSES
 _REVIEW_STATUS_COLOR = REVIEW_STATUS_COLORS
 
+def _archived_theme_colors(theme_name: str) -> dict[str, str]:
+    # The finding-detail pane is raw HTML (QTextEdit::setHtml), so it can't pick
+    # up colors from the app's QSS stylesheet the way native widgets do — every
+    # color it uses has to be threaded in explicitly from the active theme.
+    t = THEMES.get(theme_name, THEMES["executive_dark"])
+    return {
+        "raised": t["raised"],
+        "panel": t["app"],
+        "border": t["border"],
+        "text": t["text"],
+        "muted": t["muted"],
+        "label": t["secondary"],
+        "orange": t["orange"],
+        "green": t["success"],
+        "red": t["danger"],
+        "blue": t["blue"],
+    }
+
+
 _WINDOW_FLAGS = (
     Qt.WindowType.Dialog |
     Qt.WindowType.WindowTitleHint |
@@ -67,9 +87,10 @@ _WINDOW_FLAGS = (
 
 
 class ArchivedCompareWindow(QDialog):
-    def __init__(self, record_path: str, parent: QWidget | None = None) -> None:
+    def __init__(self, record_path: str, parent: QWidget | None = None, theme_name: str = "executive_dark") -> None:
         super().__init__(parent, _WINDOW_FLAGS)
         self.record_path = record_path
+        self._colors = _archived_theme_colors(theme_name)
         self.payload = load_compare_record_payload(record_path)
         self.findings = _record_findings(self.payload)
         self._all_findings = list(self.findings)  # unfiltered copy for search
@@ -357,7 +378,7 @@ class ArchivedCompareWindow(QDialog):
             badge(str(finding.get("status") or "Unknown"), _status_badge_state(finding), min_width=112),
         )
         self.detail_text.setHtml(
-            _finding_detail_html(finding, self._backup_a_title, self._backup_b_title)
+            _finding_detail_html(finding, self._backup_a_title, self._backup_b_title, self._colors)
         )
 
         self.review_status.setCurrentText(normalize_review_status(review.get("status") or "Pending Review"))
@@ -503,16 +524,18 @@ def _finding_detail_html(
     finding: dict[str, Any],
     backup_a_title: str = "Backup A",
     backup_b_title: str = "Backup B",
+    colors: dict[str, str] | None = None,
 ) -> str:
-    C_RAISED = "#202123"
-    C_BORDER = "rgba(255,255,255,0.08)"
-    C_TEXT   = "#F4F6F8"
-    C_MUTED  = "#85888E"
-    C_LABEL  = "#C0C3C7"
-    C_ORANGE = "#FF8A1F"
-    C_GREEN  = "#3DDC84"
-    C_RED    = "#FF4D4D"
-    C_BLUE   = "#82B6FF"
+    t = colors or _archived_theme_colors("executive_dark")
+    C_RAISED = t["raised"]
+    C_BORDER = t["border"]
+    C_TEXT   = t["text"]
+    C_MUTED  = t["muted"]
+    C_LABEL  = t["label"]
+    C_ORANGE = t["orange"]
+    C_GREEN  = t["green"]
+    C_RED    = t["red"]
+    C_BLUE   = t["blue"]
 
     status      = str(finding.get("status") or "Unknown")
     name        = str(finding.get("name") or finding.get("key") or "")
@@ -525,7 +548,7 @@ def _finding_detail_html(
     changes: list[str]  = [str(c) for c in (finding.get("changes") or []) if c]
     evidence: list[str] = [str(e) for e in (finding.get("supporting_evidence") or []) if e]
     if isinstance(finding.get("policy_a"), dict) or isinstance(finding.get("policy_b"), dict):
-        return _full_finding_detail_html(finding, backup_a_title, backup_b_title)
+        return _full_finding_detail_html(finding, backup_a_title, backup_b_title, t)
 
     path = (
         f"{scope}  ›  {cat}"
@@ -823,17 +846,9 @@ def _full_finding_detail_html(
     finding: dict[str, Any],
     backup_a_title: str,
     backup_b_title: str,
+    colors: dict[str, str] | None = None,
 ) -> str:
-    colors = {
-        "raised": "#202123",
-        "panel": "#151617",
-        "border": "rgba(255,255,255,0.08)",
-        "text": "#F4F6F8",
-        "muted": "#85888E",
-        "label": "#C0C3C7",
-        "orange": "#FF8A1F",
-        "blue": "#82B6FF",
-    }
+    colors = colors or _archived_theme_colors("executive_dark")
     review = finding.get("review") if isinstance(finding.get("review"), dict) else {}
     review_status = normalize_review_status(review.get("status") or "Pending Review")
     # Display-only substitution: the underlying "changes" strings are generated once at

@@ -1,28 +1,42 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTableWidget,
+    QTableWidgetSelectionRange,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from app.core.log import get_logger
 from app.gpo.backup_catalog import BackupCatalogItem
-from app.ui.widgets import badge, badge_item, configure_enterprise_table, readonly_item
+from app.ui.widgets import (
+    SortableTableWidgetItem,
+    badge,
+    badge_item,
+    configure_enterprise_table,
+    readonly_item,
+)
 
 _log = get_logger(__name__)
+
+_GROUP_HEADER_ROLE = Qt.ItemDataRole.UserRole + 50
 
 
 class DashboardPage(QWidget):
@@ -41,6 +55,11 @@ class DashboardPage(QWidget):
         self.compare_records: list[Any] = []
         self.compare_pending_path = ""
         self._scan_in_progress = False
+        self.group_by_source = True
+        self._collapsed_groups: set[str] = set()
+        self._row_group_key: dict[int, str] = {}
+        self._row_is_header: dict[int, bool] = {}
+        self._last_filtered_items: list[BackupCatalogItem] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 16, 22, 16)
@@ -80,51 +99,6 @@ class DashboardPage(QWidget):
 
         layout.addWidget(self._build_library_stats())
         layout.addWidget(self._build_backup_library_panel(), 1)
-
-    # ── command bar ───────────────────────────────────────────────────────────
-
-    def _build_command_bar(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("RaisedPanel")
-        panel.setMaximumHeight(66)
-
-        layout = QHBoxLayout(panel)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(12)
-
-        self.library_status_label = QLabel("No backups found")
-        self.library_status_label.setObjectName("PanelTitle")
-        self.last_scan_label = QLabel("Not scanned")
-        self.last_scan_label.setObjectName("Muted")
-
-        self.view_backups_btn = QPushButton("View Backup(s)")
-        self.view_backups_btn.setObjectName("PrimaryButton")
-        self.view_backups_btn.setMinimumWidth(140)
-        self.view_backups_btn.setToolTip("View (1 selected) or Compare (2 selected)  —  Enter")
-        self.view_backups_btn.clicked.connect(self._on_view_backups_clicked)
-
-        archive_button = QPushButton("Archive")
-        archive_button.setObjectName("GhostButton")
-        archive_button.setMinimumWidth(88)
-        archive_button.clicked.connect(self._on_archive_clicked)
-
-        refresh_button = QPushButton("Scan")
-        refresh_button.setObjectName("GhostButton")
-        refresh_button.setMinimumWidth(72)
-        refresh_button.clicked.connect(self._on_refresh_clicked)
-
-        stats = QVBoxLayout()
-        stats.setSpacing(2)
-        stats.addWidget(self.library_status_label)
-        stats.addWidget(self.last_scan_label)
-
-        layout.addLayout(stats)
-        layout.addStretch(1)
-        layout.addWidget(self.view_backups_btn)
-        layout.addWidget(archive_button)
-        layout.addWidget(refresh_button)
-
-        return panel
 
     # ── library panel ─────────────────────────────────────────────────────────
 
@@ -168,18 +142,20 @@ class DashboardPage(QWidget):
         self.source_filter.addItem("All Sources")
         self.source_filter.currentTextChanged.connect(self._apply_source_filter)
 
+        # Filters that used to sit inline as three separate combo boxes are now
+        # tucked behind one "Filters" button — see _build_filters_menu().
         self.status_filter = QComboBox()
-        self.status_filter.setMinimumWidth(128)
+        self.status_filter.setMinimumWidth(160)
         self.status_filter.addItems(["All Statuses", "Valid", "Needs review"])
-        self.status_filter.currentTextChanged.connect(self._apply_row_filter)
+        self.status_filter.currentTextChanged.connect(self._on_popover_filter_changed)
 
         self.date_filter = QComboBox()
-        self.date_filter.setMinimumWidth(124)
+        self.date_filter.setMinimumWidth(160)
         self.date_filter.addItems(["Any Date", "Last 7 Days", "Last 30 Days", "Last 90 Days"])
-        self.date_filter.currentTextChanged.connect(self._apply_row_filter)
+        self.date_filter.currentTextChanged.connect(self._on_popover_filter_changed)
 
         self.context_filter = QComboBox()
-        self.context_filter.setMinimumWidth(166)
+        self.context_filter.setMinimumWidth(160)
         self.context_filter.addItems([
             "All Contexts",
             "Duplicate Names",
@@ -187,7 +163,19 @@ class DashboardPage(QWidget):
             "Has Saved Report",
             "Recently Changed",
         ])
-        self.context_filter.currentTextChanged.connect(self._apply_row_filter)
+        self.context_filter.currentTextChanged.connect(self._on_popover_filter_changed)
+
+        self.filters_button = QPushButton("Filters")
+        self.filters_button.setObjectName("GhostButton")
+        self.filters_button.setMinimumWidth(96)
+        self.filters_button.setMenu(self._build_filters_menu())
+
+        self.group_toggle_button = QPushButton("Group by Source")
+        self.group_toggle_button.setObjectName("GhostButton")
+        self.group_toggle_button.setMinimumWidth(112)
+        self.group_toggle_button.setProperty("active", "true")
+        self.group_toggle_button.setToolTip("Cluster every backup under its source directory, like GPMC's console tree.")
+        self.group_toggle_button.clicked.connect(self._toggle_group_by_source)
 
         open_settings_button = QPushButton("Manage Sources")
         open_settings_button.setObjectName("GhostButton")
@@ -197,9 +185,8 @@ class DashboardPage(QWidget):
         header.addWidget(heading)
         header.addStretch()
         header.addWidget(self.source_filter)
-        header.addWidget(self.status_filter)
-        header.addWidget(self.date_filter)
-        header.addWidget(self.context_filter)
+        header.addWidget(self.filters_button)
+        header.addWidget(self.group_toggle_button)
         header.addWidget(open_settings_button)
         layout.addLayout(header)
 
@@ -217,6 +204,13 @@ class DashboardPage(QWidget):
         health_row.addWidget(self.summary_label)
         layout.addLayout(health_row)
 
+        self.compare_tray = QFrame()
+        self.compare_tray_layout = QHBoxLayout(self.compare_tray)
+        self.compare_tray_layout.setContentsMargins(0, 0, 0, 4)
+        self.compare_tray_layout.setSpacing(8)
+        self.compare_tray.setVisible(False)
+        layout.addWidget(self.compare_tray)
+
         self.backup_filter_box = QLineEdit()
         self.backup_filter_box.setPlaceholderText("Filter by GPO name, domain, path, status, or source...")
         self.backup_filter_box.setClearButtonEnabled(True)
@@ -229,6 +223,35 @@ class DashboardPage(QWidget):
         layout.addWidget(self.empty_helper, 1)
 
         return panel
+
+    def _build_filters_menu(self) -> QMenu:
+        menu = QMenu(self)
+
+        container = QWidget()
+        form = QVBoxLayout(container)
+        form.setContentsMargins(10, 8, 10, 4)
+        form.setSpacing(6)
+        for label_text, combo in (
+            ("Status", self.status_filter),
+            ("Date", self.date_filter),
+            ("Context", self.context_filter),
+        ):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel(label_text)
+            label.setObjectName("Muted")
+            label.setMinimumWidth(52)
+            row.addWidget(label)
+            row.addWidget(combo, 1)
+            form.addLayout(row)
+
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(container)
+        menu.addAction(widget_action)
+        menu.addSeparator()
+        clear_action = menu.addAction("Clear Filters")
+        clear_action.triggered.connect(self._clear_popover_filters)
+        return menu
 
     def _build_backup_table(self) -> QTableWidget:
         self.backup_table = QTableWidget(0, 6)
@@ -245,7 +268,10 @@ class DashboardPage(QWidget):
         self.backup_table.horizontalHeader().resizeSection(5, 60)
         self.backup_table.itemSelectionChanged.connect(self._on_selection_changed)
         self.backup_table.cellDoubleClicked.connect(self._on_row_double_clicked)
+        self.backup_table.cellClicked.connect(self._on_cell_clicked)
         self.backup_table.installEventFilter(self)
+        self.backup_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.backup_table.customContextMenuRequested.connect(self._on_table_context_menu)
         return self.backup_table
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -352,6 +378,19 @@ class DashboardPage(QWidget):
         if path:
             self.view_backup_requested.emit(str(path))
 
+    def _on_cell_clicked(self, row: int, _col: int) -> None:
+        header_item = self.backup_table.item(row, 0)
+        if header_item is None:
+            return
+        group_key = header_item.data(_GROUP_HEADER_ROLE)
+        if group_key is None:
+            return
+        if group_key in self._collapsed_groups:
+            self._collapsed_groups.discard(group_key)
+        else:
+            self._collapsed_groups.add(group_key)
+        self._refresh_collapse_state()
+
     def _on_archive_clicked(self) -> None:
         paths = self.get_selected_backup_paths()
         if paths:
@@ -364,10 +403,134 @@ class DashboardPage(QWidget):
         else:
             self.view_backups_btn.setText("View Backup(s)")
         self._update_selection_summary()
+        self._rebuild_compare_tray()
         self.selection_changed.emit(count)
 
-    def _apply_backup_filter(self) -> None:
+    def _on_popover_filter_changed(self) -> None:
+        self._update_filters_button_label()
         self._apply_row_filter()
+
+    def _clear_popover_filters(self) -> None:
+        for combo in (self.status_filter, self.date_filter, self.context_filter):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self._on_popover_filter_changed()
+
+    def _update_filters_button_label(self) -> None:
+        active = sum(
+            1
+            for combo in (self.status_filter, self.date_filter, self.context_filter)
+            if combo.currentIndex() != 0
+        )
+        self.filters_button.setText(f"Filters ({active})" if active else "Filters")
+        self.filters_button.setProperty("active", "true" if active else "false")
+        self.filters_button.style().unpolish(self.filters_button)
+        self.filters_button.style().polish(self.filters_button)
+
+    def _toggle_group_by_source(self) -> None:
+        self.group_by_source = not self.group_by_source
+        self.group_toggle_button.setProperty("active", "true" if self.group_by_source else "false")
+        self.group_toggle_button.style().unpolish(self.group_toggle_button)
+        self.group_toggle_button.style().polish(self.group_toggle_button)
+        self._rebuild_table()
+
+    def _on_table_context_menu(self, pos) -> None:
+        row = self.backup_table.rowAt(pos.y())
+        if row < 0:
+            return
+
+        header_item = self.backup_table.item(row, 0)
+        if header_item is not None and header_item.data(_GROUP_HEADER_ROLE) is not None:
+            self._show_group_header_context_menu()
+            return
+
+        path_item = self.backup_table.item(row, 1)
+        if path_item is None or not path_item.data(Qt.ItemDataRole.UserRole):
+            return
+
+        selected_paths = self.get_selected_backup_paths()
+        row_path = str(path_item.data(Qt.ItemDataRole.UserRole))
+        if row_path not in selected_paths:
+            self.backup_table.clearSelection()
+            self.backup_table.selectRow(row)
+            selected_paths = [row_path]
+
+        self._show_row_context_menu(selected_paths)
+
+    def _show_row_context_menu(self, selected_paths: list[str]) -> None:
+        menu = QMenu(self)
+
+        view_action = menu.addAction("View Backup")
+        view_action.setEnabled(len(selected_paths) == 1)
+        view_action.triggered.connect(lambda: self.view_backup_requested.emit(selected_paths[0]))
+
+        compare_action = menu.addAction("Compare Selected (2)")
+        compare_action.setEnabled(len(selected_paths) == 2)
+        compare_action.triggered.connect(
+            lambda: self.compare_backups_requested.emit(selected_paths[0], selected_paths[1])
+        )
+
+        menu.addSeparator()
+        archive_action = menu.addAction("Archive Selected")
+        archive_action.triggered.connect(lambda: self.archive_requested.emit(selected_paths))
+
+        menu.addSeparator()
+        copy_path_action = menu.addAction("Copy Backup Path")
+        copy_path_action.setEnabled(len(selected_paths) == 1)
+        copy_path_action.triggered.connect(lambda: self._copy_to_clipboard(selected_paths[0]))
+
+        reveal_action = menu.addAction("Reveal in File Explorer")
+        reveal_action.setEnabled(len(selected_paths) == 1)
+        reveal_action.triggered.connect(lambda: self._reveal_in_explorer(selected_paths[0]))
+
+        menu.exec(QCursor.pos())
+
+    def _show_group_header_context_menu(self) -> None:
+        menu = QMenu(self)
+        expand_action = menu.addAction("Expand All Groups")
+        expand_action.triggered.connect(self._expand_all_groups)
+        collapse_action = menu.addAction("Collapse All Groups")
+        collapse_action.triggered.connect(self._collapse_all_groups)
+        menu.exec(QCursor.pos())
+
+    def _expand_all_groups(self) -> None:
+        self._collapsed_groups.clear()
+        self._refresh_collapse_state()
+
+    def _collapse_all_groups(self) -> None:
+        self._collapsed_groups = {key for key in self._row_group_key.values() if key}
+        self._refresh_collapse_state()
+
+    def _refresh_collapse_state(self) -> None:
+        # Collapsing/expanding only changes which rows are hidden and each
+        # header's ▾/▸ marker — it must not rebuild the table (that would
+        # recreate every row's items and badge widgets just to toggle
+        # visibility, and re-run source scans/report lookups for nothing).
+        for row, is_header in self._row_is_header.items():
+            if not is_header:
+                continue
+            header_item = self.backup_table.item(row, 0)
+            if header_item is None:
+                continue
+            group_key = header_item.data(_GROUP_HEADER_ROLE)
+            marker = "▸" if group_key in self._collapsed_groups else "▾"
+            text = header_item.text()
+            if text:
+                header_item.setText(marker + text[1:])
+        self._apply_row_filter()
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
+
+    def _reveal_in_explorer(self, backup_path: str) -> None:
+        try:
+            if os.name == "nt":
+                os.startfile(backup_path)  # noqa: S606 — opens Explorer at a known local backup folder
+            else:
+                _log.info("Reveal in File Explorer is only supported on Windows")
+        except OSError as error:
+            _log.warning("Could not open %s in File Explorer: %s", backup_path, error)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.backup_table and event.type() == QEvent.Type.KeyPress:
@@ -380,6 +543,58 @@ class DashboardPage(QWidget):
                 self.archive_requested.emit(paths)
                 return True
         return super().eventFilter(obj, event)
+
+    # ── compare tray ──────────────────────────────────────────────────────────
+
+    def _rebuild_compare_tray(self) -> None:
+        while self.compare_tray_layout.count():
+            child = self.compare_tray_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        paths = self.get_selected_backup_paths()
+        if not paths:
+            self.compare_tray.setVisible(False)
+            return
+
+        self.compare_tray.setVisible(True)
+        caption = QLabel("Comparing:" if len(paths) == 2 else "Selected for compare:")
+        caption.setObjectName("Muted")
+        self.compare_tray_layout.addWidget(caption)
+        for path in paths:
+            item = _catalog_item_for_path(self.catalog_items, path)
+            name = item.display_name if item else Path(path).name
+            self.compare_tray_layout.addWidget(self._build_selection_chip(name, path))
+        self.compare_tray_layout.addStretch()
+
+    def _build_selection_chip(self, name: str, path: str) -> QFrame:
+        chip = QFrame()
+        chip.setObjectName("SelectionChip")
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(10, 3, 5, 3)
+        chip_layout.setSpacing(6)
+
+        text = QLabel(name)
+        remove_btn = QPushButton("×")
+        remove_btn.setObjectName("ChipRemoveButton")
+        remove_btn.setFixedSize(18, 18)
+        remove_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        remove_btn.setToolTip("Remove from selection")
+        remove_btn.clicked.connect(lambda _, p=path: self._deselect_backup(p))
+
+        chip_layout.addWidget(text)
+        chip_layout.addWidget(remove_btn)
+        return chip
+
+    def _deselect_backup(self, path: str) -> None:
+        for row in range(self.backup_table.rowCount()):
+            item = self.backup_table.item(row, 1)
+            if item and item.data(Qt.ItemDataRole.UserRole) == path:
+                self.backup_table.setRangeSelected(
+                    QTableWidgetSelectionRange(row, 0, row, self.backup_table.columnCount() - 1),
+                    False,
+                )
+                break
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -407,58 +622,115 @@ class DashboardPage(QWidget):
                 item for item in self.catalog_items if item.source_index == source_index
             ])
 
+    def _rebuild_table(self) -> None:
+        self._populate_backup_table(self._last_filtered_items)
+
     def _populate_backup_table(self, items: list[BackupCatalogItem]) -> None:
+        self._last_filtered_items = items
         self.backup_table.setSortingEnabled(False)
+        self.backup_table.clearSpans()
         self.backup_table.setRowCount(0)
+        self._row_group_key = {}
+        self._row_is_header = {}
         report_summaries = _saved_report_summaries(self.compare_records)
 
-        for item in sorted(
-            items,
-            key=lambda i: (i.display_name.casefold(), i.source_index, i.folder_name.casefold()),
-        ):
-            row = self.backup_table.rowCount()
-            self.backup_table.insertRow(row)
+        if self.group_by_source:
+            for group_name, group_items in _group_backup_items_by_source(items):
+                group_key = group_name.casefold()
+                header_row = self.backup_table.rowCount()
+                self.backup_table.insertRow(header_row)
+                self._insert_group_header(header_row, group_name, group_key, group_items)
+                self._row_is_header[header_row] = True
 
-            source_item = readonly_item(str(item.source_index), sort_key=(item.source_index, item.display_name.casefold()))
-            name_item = readonly_item(item.display_name, sort_key=_backup_name_sort_key(item))
-            name_item.setData(Qt.ItemDataRole.UserRole, item.path)
-            name_item.setToolTip(item.detail)
-            date_item = readonly_item(
-                _display_backup_time(item.backup_time, item.path),
-                sort_key=_backup_time_sort_key(item.backup_time, item.path),
+                for item in group_items:
+                    row = self._insert_backup_row(item, report_summaries)
+                    self._row_group_key[row] = group_key
+        else:
+            ordered = sorted(
+                items,
+                key=lambda i: (i.display_name.casefold(), i.source_index, i.folder_name.casefold()),
             )
-            count_item = readonly_item(str(item.item_count), sort_key=item.item_count)
-            status_item = badge_item(item.status, sort_key=(item.status.casefold(), item.display_name.casefold()))
-            status_item.setToolTip(item.detail)
-            status_badge = badge(item.status, "valid" if item.is_valid else "review", min_width=92)
-            status_badge.setToolTip(item.detail)
-            related_reports = report_summaries.get(item.path, [])
-            report_count = len(related_reports)
-            report_text = f"{report_count} report{'s' if report_count != 1 else ''}" if report_count else "None"
-            report_item = readonly_item(
-                "" if report_count else report_text,
-                user_data=report_text,
-                sort_key=(0 if report_count else 1, -report_count, item.display_name.casefold()),
-            )
-            report_item.setToolTip(_saved_report_tooltip(related_reports))
+            for item in ordered:
+                self._insert_backup_row(item, report_summaries)
 
-            self.backup_table.setItem(row, 0, source_item)
-            self.backup_table.setItem(row, 1, name_item)
-            self.backup_table.setItem(row, 2, date_item)
-            self.backup_table.setItem(row, 3, status_item)
-            self.backup_table.setItem(row, 4, report_item)
-            self.backup_table.setItem(row, 5, count_item)
-            self.backup_table.setCellWidget(row, 3, status_badge)
-            if report_count:
-                report_badge = badge(report_text, "review", min_width=92)
-                report_badge.setToolTip(_saved_report_tooltip(related_reports))
-                self.backup_table.setCellWidget(row, 4, report_badge)
+        if not self.group_by_source:
+            self.backup_table.setSortingEnabled(True)
+            self.backup_table.sortItems(1, Qt.SortOrder.AscendingOrder)
 
-        self.backup_table.setSortingEnabled(True)
-        self.backup_table.sortItems(1, Qt.SortOrder.AscendingOrder)
         self._apply_row_filter()
         self._update_selection_summary()
         self._update_empty_helper()
+
+    def _insert_group_header(
+        self,
+        row: int,
+        group_name: str,
+        group_key: str,
+        group_items: list[BackupCatalogItem],
+    ) -> None:
+        count = len(group_items)
+        warnings = sum(1 for item in group_items if not item.is_valid)
+        marker = "▸" if group_key in self._collapsed_groups else "▾"
+
+        parts = [group_name]
+        folder_label = _source_folder_label(group_items[0].source_path) if group_items else ""
+        if folder_label:
+            parts.append(folder_label)
+        parts.append(f"{count} backup{'s' if count != 1 else ''}")
+        if warnings:
+            parts.append(f"{warnings} needs review")
+        label = f"{marker}  " + "   ·   ".join(parts)
+
+        header_item = SortableTableWidgetItem(label, sort_key=group_name.casefold())
+        header_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        font = header_item.font()
+        font.setBold(True)
+        header_item.setFont(font)
+        header_item.setData(_GROUP_HEADER_ROLE, group_key)
+        self.backup_table.setItem(row, 0, header_item)
+        self.backup_table.setSpan(row, 0, 1, self.backup_table.columnCount())
+        self.backup_table.setRowHeight(row, 30)
+
+    def _insert_backup_row(self, item: BackupCatalogItem, report_summaries: dict[str, list[Any]]) -> int:
+        row = self.backup_table.rowCount()
+        self.backup_table.insertRow(row)
+
+        source_item = readonly_item(str(item.source_index), sort_key=(item.source_index, item.display_name.casefold()))
+        name_item = readonly_item(item.display_name, sort_key=_backup_name_sort_key(item))
+        name_item.setData(Qt.ItemDataRole.UserRole, item.path)
+        name_item.setToolTip(item.detail)
+        date_item = readonly_item(
+            _display_backup_time(item.backup_time, item.path),
+            sort_key=_backup_time_sort_key(item.backup_time, item.path),
+        )
+        count_item = readonly_item(str(item.item_count), sort_key=item.item_count)
+        status_item = badge_item(item.status, sort_key=(item.status.casefold(), item.display_name.casefold()))
+        status_item.setToolTip(item.detail)
+        status_badge = badge(item.status, "valid" if item.is_valid else "review", min_width=92)
+        status_badge.setToolTip(item.detail)
+        related_reports = report_summaries.get(item.path, [])
+        report_count = len(related_reports)
+        report_text = f"{report_count} report{'s' if report_count != 1 else ''}" if report_count else "None"
+        report_item = readonly_item(
+            "" if report_count else report_text,
+            user_data=report_text,
+            sort_key=(0 if report_count else 1, -report_count, item.display_name.casefold()),
+        )
+        report_item.setToolTip(_saved_report_tooltip(related_reports))
+
+        self.backup_table.setItem(row, 0, source_item)
+        self.backup_table.setItem(row, 1, name_item)
+        self.backup_table.setItem(row, 2, date_item)
+        self.backup_table.setItem(row, 3, status_item)
+        self.backup_table.setItem(row, 4, report_item)
+        self.backup_table.setItem(row, 5, count_item)
+        self.backup_table.setCellWidget(row, 3, status_badge)
+        if report_count:
+            report_badge = badge(report_text, "review", min_width=92)
+            report_badge.setToolTip(_saved_report_tooltip(related_reports))
+            self.backup_table.setCellWidget(row, 4, report_badge)
+
+        return row
 
     def _apply_row_filter(self) -> None:
         query = self.backup_filter_box.text().strip().casefold()
@@ -467,9 +739,27 @@ class DashboardPage(QWidget):
         context_filter = self.context_filter.currentText() if hasattr(self, "context_filter") else "All Contexts"
         duplicate_names = _duplicate_display_names(self.catalog_items)
         saved_report_paths = _saved_report_paths(self.compare_records)
-        newest_mtime_by_source = _newest_source_mtimes(self.catalog_items)
+        # This is the only consumer of newest_mtime_by_source, and computing it
+        # means stat()-ing every backup folder on disk — expensive on a network
+        # share or cloud-synced source, and this filter runs on every keystroke,
+        # filter change, and group collapse/expand. Skip the disk I/O entirely
+        # unless "Recently Changed" is actually selected.
+        newest_mtime_by_source = (
+            _newest_source_mtimes(self.catalog_items) if context_filter == "Recently Changed" else {}
+        )
+        # A collapsed group must not hide its own search/filter matches — the
+        # user is actively narrowing results and can't otherwise discover a
+        # match sitting inside a group they collapsed earlier. Only respect
+        # collapse state while browsing with no active filter.
+        filters_active = bool(query) or status_filter != "All Statuses" or date_filter != "Any Date" or context_filter != "All Contexts"
+
+        row_matches: dict[int, bool] = {}
+        group_match_counts: dict[str, int] = {}
 
         for row in range(self.backup_table.rowCount()):
+            if self._row_is_header.get(row):
+                continue
+
             haystack_parts: list[str] = []
             for col in range(self.backup_table.columnCount()):
                 cell = self.backup_table.item(row, col)
@@ -495,7 +785,32 @@ class DashboardPage(QWidget):
                 saved_report_paths,
                 newest_mtime_by_source,
             )
-            self.backup_table.setRowHidden(row, not (query_match and status_match and date_match and context_match))
+            matched = query_match and status_match and date_match and context_match
+            row_matches[row] = matched
+
+            group_key = self._row_group_key.get(row)
+            if group_key:
+                group_match_counts[group_key] = group_match_counts.get(group_key, 0) + (1 if matched else 0)
+
+        for row in range(self.backup_table.rowCount()):
+            if self._row_is_header.get(row):
+                header_item = self.backup_table.item(row, 0)
+                group_key = header_item.data(_GROUP_HEADER_ROLE) if header_item else None
+                visible_count = group_match_counts.get(group_key, 0)
+                self.backup_table.setRowHidden(row, visible_count == 0)
+                if header_item is not None:
+                    stored_collapsed = bool(group_key) and group_key in self._collapsed_groups
+                    marker = "▸" if stored_collapsed and not filters_active else "▾"
+                    text = header_item.text()
+                    if text and text[0] != marker:
+                        header_item.setText(marker + text[1:])
+                continue
+
+            matched = row_matches.get(row, True)
+            group_key = self._row_group_key.get(row)
+            collapsed = bool(group_key) and group_key in self._collapsed_groups and not filters_active
+            self.backup_table.setRowHidden(row, not matched or collapsed)
+
         self._update_selection_summary()
         self._update_empty_helper()
 
@@ -510,7 +825,7 @@ class DashboardPage(QWidget):
             else:
                 self.summary_label.setText("Add a backup directory in Settings, then scan the library.")
         elif selected_count == 0:
-            visible = _visible_row_count(self.backup_table)
+            visible = _visible_backup_row_count(self.backup_table, self._row_is_header)
             if visible != len(self.catalog_items):
                 self.summary_label.setText(f"{visible} of {len(self.catalog_items)} backups shown. Select one to view or two to compare.")
             else:
@@ -558,10 +873,16 @@ class DashboardPage(QWidget):
 
     def _update_empty_helper(self) -> None:
         total_rows = self.backup_table.rowCount()
-        visible_rows = _visible_row_count(self.backup_table)
-        has_visible_rows = visible_rows > 0
-        self.backup_table.setVisible(has_visible_rows)
-        if has_visible_rows:
+        # A collapsed group leaves its header visible with zero visible backup
+        # rows underneath — that's not "nothing to show", so the table-vs-empty-
+        # helper decision must count header rows too, unlike the "N of M backups
+        # shown" stat in _update_selection_summary which intentionally counts
+        # only backup rows.
+        any_row_visible = any(
+            not self.backup_table.isRowHidden(row) for row in range(total_rows)
+        )
+        self.backup_table.setVisible(any_row_visible)
+        if any_row_visible:
             self.empty_helper.setVisible(False)
             return
 
@@ -638,6 +959,28 @@ def _backup_time_sort_key(backup_time: str, fallback_path: str) -> float:
 
 def _catalog_item_for_path(items: list[BackupCatalogItem], path: str) -> BackupCatalogItem | None:
     return next((item for item in items if item.path == path), None)
+
+
+def _group_backup_items_by_source(items: list[BackupCatalogItem]) -> list[tuple[str, list[BackupCatalogItem]]]:
+    groups: dict[int, list[BackupCatalogItem]] = {}
+    for item in items:
+        groups.setdefault(item.source_index, []).append(item)
+
+    result: list[tuple[str, list[BackupCatalogItem]]] = []
+    for source_index in sorted(groups.keys()):
+        group_items = sorted(
+            groups[source_index],
+            key=lambda i: (i.display_name.casefold(), i.folder_name.casefold()),
+        )
+        result.append((f"Source {source_index}", group_items))
+    return result
+
+
+def _source_folder_label(source_path: str) -> str:
+    # The group header shows this instead of the full source directory path —
+    # just the last path segment, e.g. "D:\Backups\GPO\Environment3" -> "Environment3".
+    name = Path(source_path.rstrip("\\/")).name if source_path else ""
+    return name
 
 
 def _duplicate_display_names(items: list[BackupCatalogItem]) -> set[str]:
@@ -764,8 +1107,12 @@ def _matches_context_filter(
     return True
 
 
-def _visible_row_count(table: QTableWidget) -> int:
-    return sum(1 for row in range(table.rowCount()) if not table.isRowHidden(row))
+def _visible_backup_row_count(table: QTableWidget, row_is_header: dict[int, bool]) -> int:
+    return sum(
+        1
+        for row in range(table.rowCount())
+        if not table.isRowHidden(row) and not row_is_header.get(row)
+    )
 
 
 def _short_value(value: str, limit: int = 180) -> str:

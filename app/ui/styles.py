@@ -3,7 +3,7 @@ from __future__ import annotations
 
 THEME_LABELS = {
     "executive_dark": "Executive Dark",
-    "clean_light": "Graphite Light",
+    "clean_light": "Slate Light",
 }
 
 
@@ -41,36 +41,40 @@ THEMES = {
         "scroll_handle": "#252628",
     },
     "clean_light": {
-        "app": "#F4F5F7",
-        "sidebar": "#E6E8EC",
-        "panel": "#FFFFFF",
-        "raised": "#EEF1F5",
-        "field": "#FFFFFF",
-        "text": "#111827",
-        "secondary": "#374151",
-        "muted": "#667085",
-        "border": "rgba(17, 24, 39, 0.18)",
-        "soft": "rgba(17, 24, 39, 0.06)",
-        "table_alt": "#F7F8FA",
-        "hover": "#E1E6EE",
+        # "Slate Dusk" — a deeper, cooler ground than the old near-white
+        # "Graphite Light" theme, so text-on-panel contrast stays crisp
+        # without needing near-black text or dark borders to get there.
+        # Picked via a side-by-side palette review (see project memory).
+        "app": "#DEE3E9",
+        "sidebar": "#D3D9E0",
+        "panel": "#EBEEF2",
+        "raised": "#E3E7EC",
+        "field": "#EBEEF2",
+        "text": "#1C2129",
+        "secondary": "#414957",
+        "muted": "#616A78",
+        "border": "rgba(23, 27, 34, 0.10)",
+        "soft": "rgba(23, 27, 34, 0.05)",
+        "table_alt": "#E6E9ED",
+        "hover": "#DCE1E7",
         "orange": "#F97316",
         "orange_hover": "#EA580C",
-        "orange_soft": "rgba(249, 115, 22, 0.12)",
-        "orange_border": "rgba(249, 115, 22, 0.36)",
-        "orange_focus": "rgba(249, 115, 22, 0.52)",
-        "success": "#047857",
-        "success_soft": "rgba(4, 120, 87, 0.11)",
-        "success_border": "rgba(4, 120, 87, 0.28)",
+        "orange_soft": "rgba(249, 115, 22, 0.14)",
+        "orange_border": "rgba(249, 115, 22, 0.40)",
+        "orange_focus": "rgba(249, 115, 22, 0.56)",
+        "success": "#0C6E4C",
+        "success_soft": "rgba(12, 110, 76, 0.13)",
+        "success_border": "rgba(12, 110, 76, 0.27)",
         "danger": "#B42318",
         "danger_soft": "rgba(180, 35, 24, 0.11)",
         "danger_border": "rgba(180, 35, 24, 0.30)",
         "blue": "#1D4ED8",
         "blue_soft": "rgba(29, 78, 216, 0.10)",
         "blue_border": "rgba(29, 78, 216, 0.26)",
-        "badge": "#EEF2F6",
-        "disabled": "#E5E7EB",
-        "primary_text": "#1F1307",
-        "scroll_handle": "#C4CAD3",
+        "badge": "#E3E7EC",
+        "disabled": "#D6DBE1",
+        "primary_text": "#3A1B03",
+        "scroll_handle": "#AEB6C0",
     },
 }
 
@@ -306,6 +310,37 @@ QPushButton#GhostButton {{
 QPushButton#GhostButton:hover {{
     background-color: {t["soft"]};
     color: {t["text"]};
+}}
+
+QPushButton#GhostButton[active="true"] {{
+    background-color: {t["orange_soft"]};
+    color: {t["text"]};
+    border: 1px solid {t["orange_border"]};
+}}
+
+QFrame#SelectionChip {{
+    background-color: {t["orange_soft"]};
+    border: 1px solid {t["orange_border"]};
+    border-radius: 12px;
+}}
+
+QFrame#SelectionChip QLabel {{
+    color: {t["text"]};
+    font-weight: 600;
+}}
+
+QPushButton#ChipRemoveButton {{
+    background-color: transparent;
+    color: {t["secondary"]};
+    border: 0;
+    border-radius: 9px;
+    font-weight: 700;
+    padding: 0;
+}}
+
+QPushButton#ChipRemoveButton:hover {{
+    background-color: {t["danger_soft"]};
+    color: {t["danger"]};
 }}
 
 QPushButton#SidebarButton {{

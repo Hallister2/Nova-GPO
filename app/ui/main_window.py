@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
         _quit_thread(getattr(self, "_update_check_thread", None))
         _quit_thread(getattr(self, "_download_thread", None))
         _quit_thread(getattr(self, "_regenerate_thread", None))
+        _quit_thread(getattr(self.settings_page, "_recycle_scan_thread", None))
         for w in QApplication.instance().topLevelWidgets():
             if w is not self and w.isVisible():
                 w.close()
@@ -866,7 +867,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "View Failed", str(error))
             return
 
-        window = ViewWindow(backup, self)
+        window = ViewWindow(backup, self, theme_name=self.current_theme)
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.compare_with_requested.connect(
             lambda path: self._handle_compare_from_view(path, window)
@@ -904,7 +905,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            window = ArchivedCompareWindow(str(path), self)
+            window = ArchivedCompareWindow(str(path), self, theme_name=self.current_theme)
         except Exception as error:
             QMessageBox.critical(self, "Open Review Failed", str(error))
             return

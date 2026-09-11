@@ -13,6 +13,7 @@ from app.library_store import CompareLibraryRecord
 from app.ui.archived_compare_window import ArchivedCompareWindow
 from app.ui.compare_window import CompareWindow
 from app.ui.pages.reports_page import ReportsPage
+from app.ui.styles import THEMES
 from app.ui.view_window import ViewWindow
 
 # One QApplication for the entire module — Qt requires exactly one instance.
@@ -73,6 +74,47 @@ class TestViewWindowSmoke(unittest.TestCase):
         win = self._win()
         self.assertIsNone(win.report)
         win.close()
+
+    def test_section_colors_follow_active_theme(self) -> None:
+        # Regression test: the policy detail pane's section borders/headings
+        # used to hardcode Executive Dark's colors regardless of app theme.
+        dark = ViewWindow(self.backup, theme_name="executive_dark")
+        light = ViewWindow(self.backup, theme_name="clean_light")
+        self.assertEqual(dark._section_border, THEMES["executive_dark"]["border"])
+        self.assertEqual(dark._section_accent, THEMES["executive_dark"]["orange"])
+        self.assertEqual(light._section_border, THEMES["clean_light"]["border"])
+        self.assertEqual(light._section_accent, THEMES["clean_light"]["orange"])
+        self.assertNotEqual(dark._section_border, light._section_border)
+        dark.close()
+        light.close()
+
+    def test_policy_detail_html_uses_passed_theme_colors(self) -> None:
+        from app.gpo.gpreport_parser import GpoReportPolicy
+        from app.ui.view_window import _policy_detail_html
+
+        policy = GpoReportPolicy(
+            scope="Computer Configuration",
+            name="Test Policy",
+            state="Enabled",
+            category="Windows Components",
+            supported="At least Windows 10",
+            explain="Example explanation text.",
+            settings=["Value: 1"],
+        )
+        dark_border = THEMES["executive_dark"]["border"]
+        dark_accent = THEMES["executive_dark"]["orange"]
+        light_border = THEMES["clean_light"]["border"]
+        light_accent = THEMES["clean_light"]["orange"]
+
+        dark_html = _policy_detail_html(policy, dark_border, dark_accent)
+        light_html = _policy_detail_html(policy, light_border, light_accent)
+
+        self.assertIn(dark_border, dark_html)
+        self.assertIn(dark_accent, dark_html)
+        self.assertIn(light_border, light_html)
+        self.assertIn(light_accent, light_html)
+        self.assertNotIn(light_border, dark_html)
+        self.assertNotIn(dark_border, light_html)
 
 
 class TestCompareWindowSmoke(unittest.TestCase):
@@ -206,6 +248,77 @@ class TestArchivedCompareWindowSmoke(unittest.TestCase):
             self.assertIn("Settings to apply to Backup A", rendered)
             self.assertIn("Desired", rendered)
             win.close()
+
+    def test_detail_pane_follows_active_theme_not_hardcoded_dark(self) -> None:
+        # Regression test: the finding-detail HTML used to hardcode Executive
+        # Dark's colors regardless of the app's active theme, so opening a
+        # saved review in Light mode showed a dark panel inside a light window.
+        with tempfile.TemporaryDirectory() as tmp:
+            record_path = Path(tmp) / "compare.json"
+            record_path.write_text(json.dumps({
+                "title": "Saved Compare",
+                "summary": {"total_items": 1, "actionable": 1, "reviewed": 0},
+                "findings": [{
+                    "key": "finding-1",
+                    "name": "Browser Policy",
+                    "status": "Changed",
+                    "scope": "Computer Configuration",
+                    "state_a": "Enabled",
+                    "state_b": "Enabled",
+                    "changes": ["Removed configured value from Backup B: example.test"],
+                    "supporting_evidence": [],
+                    "review": {"status": "Pending Review", "priority": "Normal"},
+                }],
+            }), encoding="utf-8")
+
+            dark = ArchivedCompareWindow(str(record_path), theme_name="executive_dark")
+            light = ArchivedCompareWindow(str(record_path), theme_name="clean_light")
+
+            dark_html = dark.detail_text.toHtml().upper()
+            light_html = light.detail_text.toHtml().upper()
+
+            self.assertIn(THEMES["executive_dark"]["text"].upper(), dark_html)
+            self.assertIn(THEMES["clean_light"]["text"].upper(), light_html)
+            self.assertNotIn(THEMES["clean_light"]["text"].upper(), dark_html)
+            self.assertNotIn(THEMES["executive_dark"]["text"].upper(), light_html)
+
+            dark.close()
+            light.close()
+
+    def test_full_detail_pane_also_follows_active_theme(self) -> None:
+        # Same regression, but for the richer detail layout used when a finding
+        # carries full policy_a/policy_b data (_full_finding_detail_html).
+        with tempfile.TemporaryDirectory() as tmp:
+            record_path = Path(tmp) / "compare.json"
+            policy_a = {
+                "name": "Browser Policy",
+                "state": "Enabled",
+                "scope": "Computer Configuration",
+                "settings": ["Action: Replace"],
+            }
+            policy_b = {**policy_a, "settings": ["Action: Update"]}
+            record_path.write_text(json.dumps({
+                "title": "Saved Compare",
+                "summary": {"total_items": 1, "actionable": 1, "reviewed": 1},
+                "findings": [{
+                    "key": "finding-1",
+                    "name": "Browser Policy",
+                    "status": "Changed",
+                    "scope": "Computer Configuration",
+                    "state_a": "Enabled",
+                    "state_b": "Enabled",
+                    "policy_a": policy_a,
+                    "policy_b": policy_b,
+                    "changes": ["Value changed"],
+                    "review": {"status": "Make Changes to A", "priority": "Normal"},
+                }],
+            }), encoding="utf-8")
+
+            light = ArchivedCompareWindow(str(record_path), theme_name="clean_light")
+            rendered = light.detail_text.toHtml().upper()
+            self.assertIn(THEMES["clean_light"]["text"].upper(), rendered)
+            self.assertNotIn(THEMES["executive_dark"]["text"].upper(), rendered)
+            light.close()
 
 
 class TestReportsPageSmoke(unittest.TestCase):

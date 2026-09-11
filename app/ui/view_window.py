@@ -32,6 +32,7 @@ from app.gpo.gpo_model import GpoBackup
 from app.gpo.gpreport_parser import GpoReportPolicy, load_gpreport
 from app.gpo.ilt_parser import GPP_COMMON_HEADER, GPP_PROPERTIES_HEADER, ILT_HEADER
 from app.ui.branding import APP_LOGO_PATH, app_icon
+from app.ui.styles import THEMES
 from app.ui.widgets import badge, badge_item, configure_enterprise_table, readonly_item
 
 
@@ -41,7 +42,7 @@ ASSETS_DIR = APP_ROOT / "assets"
 class ViewWindow(QDialog):
     compare_with_requested = Signal(str)
 
-    def __init__(self, backup: GpoBackup, parent=None) -> None:
+    def __init__(self, backup: GpoBackup, parent=None, theme_name: str = "executive_dark") -> None:
         super().__init__(
             parent,
             Qt.WindowType.Dialog |
@@ -50,6 +51,13 @@ class ViewWindow(QDialog):
             Qt.WindowType.WindowCloseButtonHint |
             Qt.WindowType.WindowMaximizeButtonHint,
         )
+
+        # Raw HTML rendered via QTextEdit::setHtml doesn't inherit the app's QSS
+        # stylesheet, so section borders/headings in the policy detail pane need
+        # their colors threaded in explicitly from the active theme.
+        theme = THEMES.get(theme_name, THEMES["executive_dark"])
+        self._section_border = theme["border"]
+        self._section_accent = theme["orange"]
 
         self.backup = backup
         self.report = load_gpreport(backup.path)
@@ -466,7 +474,7 @@ class ViewWindow(QDialog):
 
             detail_name.setText(policy.name or "Unknown policy")
             _replace_badge(detail_state_slot, badge(policy.state or "Unknown", _state_badge_state(policy.state)))
-            detail_text.setHtml(_policy_detail_html(policy))
+            detail_text.setHtml(_policy_detail_html(policy, self._section_border, self._section_accent))
             empty_hint.setVisible(False)
             fields_container.setVisible(True)
 
@@ -914,7 +922,7 @@ def _split_policy_sections(settings: list[str]) -> dict[str, list[str]]:
     return sections
 
 
-def _policy_detail_html(policy: GpoReportPolicy) -> str:
+def _policy_detail_html(policy: GpoReportPolicy, border: str = "rgba(255,255,255,0.08)", accent: str = "#FF8A1F") -> str:
     sections = _split_policy_sections(policy.settings)
     rows = [
         ("Type", policy.policy_type or "Unknown"),
@@ -925,22 +933,22 @@ def _policy_detail_html(policy: GpoReportPolicy) -> str:
     ]
     html = [
         "<div style='font-size:13px; line-height:1.45;'>",
-        _detail_html_section("General", _metadata_table_html(rows)),
-        _detail_html_section("Properties", _settings_table_html(sections["properties"])),
+        _detail_html_section("General", _metadata_table_html(rows), border, accent),
+        _detail_html_section("Properties", _settings_table_html(sections["properties"]), border, accent),
     ]
     if sections["common"]:
-        html.append(_detail_html_section("Common Options", _settings_table_html(sections["common"])))
+        html.append(_detail_html_section("Common Options", _settings_table_html(sections["common"]), border, accent))
     if sections["targeting"]:
-        html.append(_detail_html_section("Item-Level Targeting", _settings_table_html(sections["targeting"], targeting=True)))
-    html.append(_detail_html_section("Explanation", f"<p>{escape(policy.explain or 'No explanation text was included in the report.')}</p>"))
+        html.append(_detail_html_section("Item-Level Targeting", _settings_table_html(sections["targeting"], targeting=True), border, accent))
+    html.append(_detail_html_section("Explanation", f"<p>{escape(policy.explain or 'No explanation text was included in the report.')}</p>", border, accent))
     html.append("</div>")
     return "".join(html)
 
 
-def _detail_html_section(title: str, body: str) -> str:
+def _detail_html_section(title: str, body: str, border: str = "rgba(255,255,255,0.08)", accent: str = "#FF8A1F") -> str:
     return (
-        "<section style='margin:0 0 14px 0; padding:10px 12px; border:1px solid rgba(255,255,255,0.08); border-radius:6px;'>"
-        f"<h3 style='font-size:12px; margin:0 0 8px 0; text-transform:uppercase; letter-spacing:0.4px; color:#FF8A1F;'>{escape(title)}</h3>"
+        f"<section style='margin:0 0 14px 0; padding:10px 12px; border:1px solid {border}; border-radius:6px;'>"
+        f"<h3 style='font-size:12px; margin:0 0 8px 0; text-transform:uppercase; letter-spacing:0.4px; color:{accent};'>{escape(title)}</h3>"
         f"{body}"
         "</section>"
     )
